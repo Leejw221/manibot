@@ -1,0 +1,130 @@
+"""zarr(ReplayBuffer) -> Diffusion Policy 공통 batch dict 어댑터.
+
+robomimic 벤치마크가 아닌 task(현재: Piper sort_return, collect.py로 수집(lerobot 저장) +
+convert_lerobot_to_zarr.py로 변환)용. robomimic_dataset.py의 RobomimicSequenceDataset과
+동일한 __getitem__ 계약(obs/action/action_mask/demo_id/index_in_demo)을 만족시켜
+diffusion_trainer.py가 데이터 소스만 바꿔 그대로 재사용한다(weighting 모듈도 이 일반
+계약만 보고 동작 - robomimic 내부 API에 의존 안 함, 2026-07-26 확인).
+
+ReplayBuffer 는 manibot.datasets.replay_buffer 한 벌만 쓴다 (FLARE 원본).
+"""
+
+import numpy as np
+import torch
+
+from manibot.datasets.replay_buffer import ReplayBuffer
+
+
+class ZarrSequenceDataset(torch.utils.data.Dataset):
+    """robomimic의 pad_frame_stack=True/pad_seq_length=True와 동일하게, 데모 경계 밖은
+    가장자리 프레임을 반복(pad)해서 (obs_horizon, pred_horizon) 윈도우를 만든다."""
+
+    def __init__(
+        self, zarr_path, obs_keys, obs_horizon, pred_horizon, normalizer=None,
+        action_key="action", rgb_keys=(), extra_keys=(), obs_gap=1,
+    ):
+        self.rgb_keys = list(rgb_keys)
+        self.obs_keys = list(obs_keys)
+        self.obs_horizon = obs_horizon
+        self.obs_gap = obs_gap      # 관측 프레임 사이 간격 (1 = 기존 동작: 연속 프레임)
+        self.pred_horizon = pred_horizon
+        self.normalizer = normalizer
+        self.action_key = action_key
+        self.extra_keys = list(extra_keys)
+
+        self._buffer = ReplayBuffer.create_from_path(str(zarr_path), mode="r")
+        episode_ends = np.asarray(self._buffer.episode_ends[:])
+        self._episode_ends = episode_ends
+        self._episode_starts = np.concatenate([[0], episode_ends[:-1]])
+
+        self._index = []  # (demo_id, index_in_demo) - 데모 안의 매 프레임 하나가 샘플 하나
+        for demo_id, (start, end) in enumerate(zip(self._episode_starts, self._episode_ends)):
+            self._index.extend((demo_id, t) for t in range(end - start))
+
+    def get_action_mode_first_frame(self):
+        """샘플(윈도우)별 대표 action_mode - robomimic_dataset.RobomimicSequenceDataset.
+        get_action_mode_first_frame과 동일 계약(그 윈도우의 행동 청크가 시작하는 프레임의
+        라벨). apo_sampler.build_balanced_sampler가 배치 구성 이전에 전체 인덱스에 대해
+        한 번에 필요로 한다(2026-07-27 밤)."""
+        action_mode = self._buffer.data["action_mode"][:]
+        global_positions = np.array(
+            [int(self._episode_starts[demo_id]) + t for demo_id, t in self._index]
+        )
+        return action_mode[global_positions]
+
+    def get_action_mode_window(self, width):
+        """샘플(윈도우)별 앞 width개 프레임의 action_mode (N, width).
+
+        get_action_mode_first_frame이 첫 프레임 하나만 보는 것과 달리, loss 쪽
+        `datasets/labels.desirable_mask`가 실제로 쓰는 것과 같은 윈도우를 돌려준다 —
+        두 곳이 다른 기준으로 판정하면 샘플러가 목표한 배치 구성이 loss에서 그대로
+        재현되지 않는다(EXP-10.md 2026-07-30~31: PREINTV로 뽑힌 윈도우의 26.7%가
+        loss에선 desirable로 뒤집혀 목표 25%가 실제 18.3%만 반영됐음).
+        데모 경계 밖은 __getitem__의 _get_window와 동일하게 가장자리 반복(clip)."""
+        action_mode = self._buffer.data["action_mode"][:]
+        out = np.empty((len(self._index), width), dtype=np.int64)
+        for i, (demo_id, t) in enumerate(self._index):
+            start = int(self._episode_starts[demo_id])
+            demo_len = int(self._episode_ends[demo_id]) - start
+            idxs = [start + int(np.clip(t + o, 0, demo_len - 1)) for o in range(width)]
+            out[i] = action_mode[idxs]
+        return out
+
+    def __len__(self):
+        return len(self._index)
+
+    def _get_window(self, key, start, end, t, horizon, before):
+        """before=True: [t-(horizon-1)*gap, ..., t-gap, t] / False: [t, t+horizon-1].
+        범위 밖은 가장자리 프레임 반복(clip)으로 패딩.
+
+        관측(before=True)에만 `obs_gap` 을 적용한다. gap>1 이면 프레임 사이를 벌려
+        **진행 방향**을 읽을 수 있게 한다 — 20Hz 연속 2프레임은 50ms 차이라 팔이
+        0.42cm 움직이고 84px 화면이 0.44% 밖에 안 달라진다(= 완전히 같은 두 장면 0.26%
+        수준) [실측 2026-09-01]. 에피소드 앞부분은 clip 때문에 자동으로 첫 프레임에
+        고정되는데, 이는 SARM 원문(xdofai `get_frame_indices`)이 ep_start 를 앵커로
+        넣는 것과 같은 효과다."""
+        arr = self._buffer.data[key]
+        demo_len = end - start
+        if before:
+            g = self.obs_gap
+            offsets = range(-(horizon - 1) * g, 1, g)
+        else:
+            offsets = range(0, horizon)
+        idxs = [int(np.clip(t + o, 0, demo_len - 1)) for o in offsets]
+        return np.stack([arr[start + i] for i in idxs])
+
+    def __getitem__(self, index):
+        demo_id, t = self._index[index]
+        start, end = int(self._episode_starts[demo_id]), int(self._episode_ends[demo_id])
+        demo_len = end - start
+
+        obs = {}
+        for key in self.obs_keys:
+            raw = self._get_window(key, start, end, t, self.obs_horizon, before=True)
+            if key in self.rgb_keys:
+                obs[key] = torch.as_tensor(raw, dtype=torch.float32).permute(0, 3, 1, 2) / 255.0
+            else:
+                obs[key] = torch.as_tensor(raw, dtype=torch.float32)
+
+        action = torch.as_tensor(
+            self._get_window(self.action_key, start, end, t, self.pred_horizon, before=False),
+            dtype=torch.float32,
+        )
+        valid_len = min(self.pred_horizon, demo_len - t)
+        action_mask = torch.zeros(self.pred_horizon, dtype=torch.bool)
+        action_mask[:valid_len] = True
+
+        if self.normalizer is not None:
+            low = {k: v for k, v in obs.items() if k not in self.rgb_keys}
+            obs.update(self.normalizer.normalize_obs(low))
+            action = self.normalizer.normalize_action(action)
+
+        item = {
+            "obs": obs, "action": action, "action_mask": action_mask,
+            "demo_id": demo_id, "index_in_demo": t,
+        }
+        for key in self.extra_keys:
+            item[key] = torch.as_tensor(
+                self._get_window(key, start, end, t, self.pred_horizon, before=False), dtype=torch.float32,
+            )
+        return item
