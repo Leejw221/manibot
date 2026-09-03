@@ -150,8 +150,8 @@ def make_eval_env(task_cfg, render=False, renderer="mjviewer", image_size_overri
     make_image_env 생성 *후에* `env.env.has_renderer` 등을 직접 패치하는 방식을 그대로 둔다
     (collect.py 참고, eval.py는 image+render 자체를 막음).
 
-    env_backend="piper_mujoco"(2026-07-26)면 robosuite 경로를 아예 안 타고 raw MuJoCo
-    어댑터(PiperSortReturnEnv)로 분기한다 — robosuite가 지원 안 하는 로봇(Piper)용.
+    env_backend="piper_mujoco"는 아직 구현이 없다 — robosuite 가 Piper 를 지원하지 않아
+    별도 raw MuJoCo 어댑터가 필요한데, 원래 구현이 git 밖 코드에 의존했다.
 
     env_backend="robocasa"는 여기서 절대 못 옴 — diffusion_trainer.py의 evaluate()가
     is_robocasa_task()로 먼저 걸러서 서브프로세스 경로로 보낸다(is_robocasa_task 참고).
@@ -163,15 +163,10 @@ def make_eval_env(task_cfg, render=False, renderer="mjviewer", image_size_overri
             "먼저 분기해야 함(호출 경로 확인 필요)."
         )
     if is_piper_task(task_cfg):
-        from manibot.envs.piper.piper_sort_return_env import PiperSortReturnEnv
-
-        image_size = image_size_override or tuple(task_cfg.image_size)
-        if isinstance(image_size, int):
-            image_size = (image_size, image_size)
-        return PiperSortReturnEnv(
-            xml_path=task_cfg.xml_path,
-            camera_names=dict(task_cfg.camera_names) if task_cfg.get("camera_names") else None,
-            image_size=image_size,
+        raise NotImplementedError(
+            "piper_mujoco 시뮬 백엔드는 아직 없다. 원래 구현(PiperSortReturnEnv)은 git 밖의 "
+            "vendored PiperMujocoEnv 에 의존해 이식하지 않았다. AgileX 공식 MJCF "
+            "(agx_arm_sim/mujoco/agilex_arm/agilex_piper) 로 새로 만드는 것이 대체 경로다."
         )
 
     gripper_types = task_cfg.get("gripper_types", None)
@@ -180,13 +175,13 @@ def make_eval_env(task_cfg, render=False, renderer="mjviewer", image_size_overri
     else:
         env_kwargs = OmegaConf.to_container(task_cfg.env_kwargs, resolve=True) if task_cfg.get("env_kwargs", None) else None
     if is_image_task(task_cfg):
-        from manibot.envs.robomimic.factory import make_image_env
+        from manibot.envs.robomimic import make_image_env
         return make_image_env(
             task_cfg.env_name, task_cfg.robots,
             list(task_cfg.lowdim_keys), list(task_cfg.rgb_keys),
             list(task_cfg.camera_names), image_size=image_size_override or task_cfg.image_size,
             gripper_types=gripper_types, env_kwargs=env_kwargs,
         )
-    from manibot.envs.robomimic.factory import make_lowdim_env
+    from manibot.envs.robomimic import make_lowdim_env
     return make_lowdim_env(task_cfg.env_name, task_cfg.robots, list(task_cfg.obs_keys),
                             render=render, renderer=renderer, gripper_types=gripper_types, env_kwargs=env_kwargs)

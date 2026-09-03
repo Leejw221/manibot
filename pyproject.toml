@@ -36,10 +36,15 @@ hardware = [
     "piper-sdk>=0.6.1",
     "pyrealsense2>=2.56.5.9235",
 ]
-# 시뮬레이션. mujoco 상한은 robosuite 쪽 API 호환에 걸려 있어 설치 검증 전까지 고정하지 않는다.
+# 시뮬레이션.
+# robosuite 는 릴리스가 아니라 master 의 특정 커밋에 고정한다.
+# PyPI 휠과 v1.5.2 태그는 mink 를 필수 의존으로 갖는데 mink 가 numpy<2.0 을 요구해서
+# 환경 전체를 numpy 1.x 로 끌어내린다 (lerobot·torch 와 어긋난다). 태그 뒤의 두 커밋이
+# 이걸 고쳤다 — 95743f66 "make mink optional", 15fbbb5e "pin mujoco>=3.3.0,<3.10".
+# mujoco 는 robosuite 가 묶으므로 여기서 따로 고정하지 않는다.
 sim = [
-    "robosuite>=1.5.1",
-    "mujoco",
+    "robosuite @ git+https://github.com/ARISE-Initiative/robosuite.git@5ce6643f3092639d08f7b0f90ed1c6a84f50552c",
+    "robomimic @ git+https://github.com/ARISE-Initiative/robomimic.git@v0.4.0",
 ]
 train = [
     "wandb>=0.24.2",
