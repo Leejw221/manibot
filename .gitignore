@@ -1,0 +1,20 @@
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+build/
+dist/
+
+# 학습 산출물·데이터는 git 밖에 둔다
+outputs/
+checkpoints/
+data/
+wandb/
+*.ckpt
+*.pth
+*.zarr/
+*.hdf5
+
+.vscode/
+.idea/
+.DS_Store
