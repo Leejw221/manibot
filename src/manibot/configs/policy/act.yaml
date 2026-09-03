@@ -1,0 +1,48 @@
+# @package _global_
+
+# ACT (Action Chunking Transformer).
+# Architecture and hyperparameters mirror lerobot's modeling_act.py /
+# configuration_act.py.  chunk_size is lowered from lerobot's 100 to 50 to
+# match our 10 Hz data (~5 s prediction window, comparable to the 4 s used
+# in the original ACT paper on 50 Hz Aloha data).
+
+resize_shape: [240, 320]
+crop_shape: [224, 288]  # 224/32 = 7, 288/32 = 9 — clean ResNet layer4 dims
+
+policy:
+  name: act
+  runner: policy_trainer
+
+  # Input / output structure
+  obs_horizon: 1                     # lerobot: n_obs_steps
+  pred_horizon: 50                   # lerobot: chunk_size (was 100, scaled for 10 Hz)
+  action_horizon: 50                 # lerobot: n_action_steps
+
+  # Vision backbone
+  vision_backbone: resnet18
+  pretrained_backbone_weights: IMAGENET1K_V1
+  replace_final_stride_with_dilation: false
+  crop_is_random: true               # train: random crop, eval: center crop
+
+  # Transformer
+  dim_model: 512                     # lerobot default (was 256)
+  n_heads: 8
+  dim_feedforward: 3200              # lerobot default (was 2048)
+  feedforward_activation: relu
+  n_encoder_layers: 4
+  n_decoder_layers: 1                # see lerobot note: original ACT had 7 but only used 1 due to a bug
+  pre_norm: false
+  dropout: 0.1
+
+  # VAE (CVAE)
+  use_vae: true
+  latent_dim: 32
+  n_vae_encoder_layers: 4
+  kl_weight: 10.0
+
+  # Optimizer
+  backbone_lr: 1e-5                  # lerobot also uses same as main lr by default; can override
+
+  # NOTE: lerobot exposes `temporal_ensemble_coeff` for in-policy TE; we instead
+  # plug temporal ensembling into the external merger (`--merger temporal_ensemble`
+  # in scripts/eval.py), so this config knob is intentionally absent.

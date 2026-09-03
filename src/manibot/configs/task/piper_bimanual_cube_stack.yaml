@@ -1,0 +1,36 @@
+# @package _global_
+
+resize_shape: [240, 320]
+crop_shape: [224, 308]
+
+task:
+  name: piper_bimanual_cube_stack
+  robot: piper
+  robot_mode: dual
+  dataset_repo_id: Leejungwook/vr_test
+  dataset_root: ${oc.env:MANIBOT_DATASETS_DIR,data}/piper_bimanual_cube_stack
+  dataset_episodes: null
+  override_stats:
+    observation.images.left_main:
+      mean: [[[0.485]], [[0.456]], [[0.406]]]
+      std: [[[0.229]], [[0.224]], [[0.225]]]
+    observation.images.left_wrist:
+      mean: [[[0.485]], [[0.456]], [[0.406]]]
+      std: [[[0.229]], [[0.224]], [[0.225]]]
+    observation.images.right_wrist:
+      mean: [[[0.485]], [[0.456]], [[0.406]]]
+      std: [[[0.229]], [[0.224]], [[0.225]]]
+
+  env_package: null
+  env_name: null
+  env_kwargs: null
+
+  fps: 30
+  image_keys:
+    - observation.images.left_main
+    - observation.images.left_wrist
+    - observation.images.right_wrist
+  state_key: observation.state
+  action_key: action
+  state_dim: 14
+  action_dim: 14

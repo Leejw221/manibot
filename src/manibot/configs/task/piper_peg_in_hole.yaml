@@ -1,0 +1,45 @@
+# @package _global_
+
+resize_shape: [240, 320]
+crop_shape: [216, 288]
+
+task:
+  name: piper_peg_in_hole
+  robot: piper
+  robot_mode: dual
+  dataset_repo_id: piper_peg_in_hole
+  dataset_root: ${oc.env:MANIBOT_DATASETS_DIR,data}/piper_peg_in_hole
+  dataset_episodes: null
+  override_stats:
+    observation.images.left_main:
+      mean: [[[0.485]], [[0.456]], [[0.406]]]
+      std: [[[0.229]], [[0.224]], [[0.225]]]
+    observation.images.left_wrist:
+      mean: [[[0.485]], [[0.456]], [[0.406]]]
+      std: [[[0.229]], [[0.224]], [[0.225]]]
+    observation.images.left_top:
+      mean: [[[0.485]], [[0.456]], [[0.406]]]
+      std: [[[0.229]], [[0.224]], [[0.225]]]
+    observation.images.right_wrist:
+      mean: [[[0.485]], [[0.456]], [[0.406]]]
+      std: [[[0.229]], [[0.224]], [[0.225]]]
+
+  env_package: null
+  env_name: null
+  env_kwargs: null
+
+  # convert.py --target-fps 10으로 30fps 원본을 10fps로 다운샘플링해서 저장하므로,
+  # 여기 fps도 반드시 실제 변환된 데이터 fps(10)와 일치해야 함 — dataset_utils.py가
+  # delta_timestamps(관측/액션 horizon)를 이 값으로 초 단위 환산 후, PiperDataset이
+  # 그걸 다시 "실제 저장 fps" 기준 인덱스로 되돌리기 때문에 (i/fps 왕복), 여기가
+  # 어긋나면 서로 다른 step이 같은 프레임 인덱스로 뭉개지는 조용한 버그가 생김.
+  fps: 10
+  # main 1개(left_main) + wrist 2개(left_wrist, right_wrist)만 사용, left_top은 제외.
+  image_keys:
+    - observation.images.left_main
+    - observation.images.left_wrist
+    - observation.images.right_wrist
+  state_key: observation.state
+  action_key: action
+  state_dim: 14
+  action_dim: 14

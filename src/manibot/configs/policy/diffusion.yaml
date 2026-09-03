@@ -1,0 +1,38 @@
+# @package _global_
+
+crop_shape: [216, 288]
+
+# DP paper (arXiv:2303.04137): batch_size 64 for image-based tasks.
+# Overridden here (not default_policy.yaml) so other policies keep their own batch_size.
+train:
+  batch_size: 64
+
+policy:
+  name: diffusion
+  runner: policy_trainer
+  action_horizon: 8
+  pred_horizon: 16
+  obs_horizon: 1
+
+  # Vision encoder
+  crop_is_random: true
+  spatial_softmax_num_keypoints: 32
+  use_separate_rgb_encoder_per_camera: true
+
+  noise_scheduler:
+    type: DDIM
+    num_train_timesteps: 100
+    num_inference_steps: 20
+    beta_start: 0.0001
+    beta_end: 0.02
+    beta_schedule: squaredcos_cap_v2
+    prediction_type: epsilon
+    clip_sample: true
+    clip_sample_range: 1.0
+
+  unet:
+    down_dims: [512, 1024, 2048]
+    kernel_size: 5
+    n_groups: 8
+    diffusion_step_embed_dim: 128
+    use_film_scale_modulation: true

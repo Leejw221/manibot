@@ -1,0 +1,31 @@
+# @package _global_
+
+resize_shape: [256, 256]
+crop_shape: [224, 224]
+
+task:
+  name: robomimic_transport
+  dataset_repo_id: iantc104/robomimic_sim_transport
+  dataset_root: ${oc.env:MANIBOT_DATASETS_DIR}/iantc104/robomimic_sim_transport
+  dataset_episodes: null
+  override_stats:
+    observation.images.agentview_image:
+      mean: [[[0.485]], [[0.456]], [[0.406]]]
+      std: [[[0.229]], [[0.224]], [[0.225]]]
+
+  env_package: gym_robomimic
+  env_name: transport-v0
+  env_kwargs:
+    max_episode_steps: 700
+
+  fps: 20 # <<< Robomimic is 20 FPS
+  image_keys: [observation.images.agentview_image]
+
+  state_key: observation.state
+  action_key: action
+  state_dim: 9   # <<< Proprioceptive state dim for Panda arm (7 joints + 2 gripper)
+  action_dim: 14  # <<< 6D delta pose + 1D gripper action
+
+val:
+    eval_n_episodes: 20
+    eval_n_envs: 5

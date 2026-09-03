@@ -1,0 +1,45 @@
+# @package _global_
+
+resize_shape: [240, 320]
+crop_shape: [216, 288]
+
+task:
+  name: repo_test
+  robot: piper
+  robot_mode: dual
+  dataset_repo_id: piper_repo_test
+  dataset_root: ${oc.env:MANIBOT_DATASETS_DIR,data}/piper_repo_test
+  dataset_episodes: null
+  override_stats:
+    observation.images.left_main:
+      mean: [[[0.485]], [[0.456]], [[0.406]]]
+      std: [[[0.229]], [[0.224]], [[0.225]]]
+    observation.images.left_wrist:
+      mean: [[[0.485]], [[0.456]], [[0.406]]]
+      std: [[[0.229]], [[0.224]], [[0.225]]]
+    observation.images.left_top:
+      mean: [[[0.485]], [[0.456]], [[0.406]]]
+      std: [[[0.229]], [[0.224]], [[0.225]]]
+    observation.images.right_wrist:
+      mean: [[[0.485]], [[0.456]], [[0.406]]]
+      std: [[[0.229]], [[0.224]], [[0.225]]]
+
+  env_package: null
+  env_name: null
+  env_kwargs: null
+
+  fps: 30
+  # Which of the recorded cameras train/eval actually use (independent of what
+  # was collected -- record.py/run_record.sh always saved all 4). eval_real.py
+  # reads this straight from the saved train_config_*.yaml, so trimming it here
+  # (or via CLI: task.image_keys='[...]') is enough for both train and eval;
+  # no separate eval-side camera setting needed.
+  image_keys:
+    - observation.images.left_main
+    - observation.images.left_wrist
+    - observation.images.left_top
+    - observation.images.right_wrist
+  state_key: observation.state
+  action_key: action
+  state_dim: 14
+  action_dim: 14
