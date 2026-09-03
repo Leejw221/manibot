@@ -9,7 +9,7 @@ description = "LeRobot-format manipulation stack sharing one training/eval path 
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
-    "lerobot==0.5.1",
+    "lerobot>=0.5.1",
     "torch>=2.5.0",
     "torchvision>=0.20.0",
     "hydra-core==1.3.2",
@@ -17,6 +17,8 @@ dependencies = [
     "diffusers==0.30.3",
     "einops==0.8.1",
     "numpy>=2.0",
+    "scipy>=1.17.0",
+    "meshcat",
     "huggingface-hub[hf-transfer,cli]>=1.7.1",
     "tqdm",
 ]
