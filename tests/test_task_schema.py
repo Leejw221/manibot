@@ -13,7 +13,7 @@ from hydra import compose, initialize_config_dir
 from manibot.utils.task_utils import is_sim_task, make_eval_env
 
 CFG_DIR = str((Path(__file__).resolve().parents[1] / "src" / "manibot" / "configs"))
-SIM_TASKS = ["robomimic_square", "robomimic_can", "robomimic_transport", "door_cabinet"]
+SIM_TASKS = ["robomimic_square", "robomimic_lift", "robomimic_transport", "door_cabinet"]
 REAL_TASKS = ["piper_cube_stack", "piper_bimanual_cube_stack"]
 
 

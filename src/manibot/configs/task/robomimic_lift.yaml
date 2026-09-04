@@ -1,0 +1,45 @@
+# @package _global_
+
+# robosuite 가 84x84 로 렌더하므로 따로 줄이지 않는다.
+resize_shape: null
+crop_shape: [76, 76]
+
+task:
+  name: robomimic_lift
+
+  # 학습·평가가 보는 유일한 이름 (실물·시뮬 공통 규약)
+  image_keys:
+    - observation.images.agentview
+    - observation.images.wrist
+  state_key: observation.state
+  action_key: action
+  state_dim: 9      # 3 + 4 + 2. derive_task_meta 가 데이터에서 다시 읽는다
+  fps: 20
+  action_dim: 7
+
+  hdf5_path: ${oc.env:MANIBOT_DATASETS_DIR,data}/lift/ph/lift_image_v15.hdf5
+  dataset_repo_id: null
+  dataset_root: ${oc.env:MANIBOT_DATASETS_DIR,data}/robomimic_lift
+
+  override_stats:
+    observation.images.agentview:
+      mean: [[[0.485]], [[0.456]], [[0.406]]]
+      std: [[[0.229]], [[0.224]], [[0.225]]]
+    observation.images.wrist:
+      mean: [[[0.485]], [[0.456]], [[0.406]]]
+      std: [[[0.229]], [[0.224]], [[0.225]]]
+
+  # 시뮬 백엔드. robosuite 고유 이름은 이 블록 안에만 존재한다.
+  sim:
+    backend: robosuite
+    env_name: Lift
+    robots: Panda
+    image_size: 84
+    max_steps: 300   # 에피소드 최대 스텝 (rollout 평가). lift 는 데모가 짧다
+    gripper_types: null
+    env_kwargs: null
+    # 이 순서가 곧 observation.state 의 성분 순서다 — 변환과 평가가 같은 순서를 써야 한다.
+    state_from: [robot0_eef_pos, robot0_eef_quat, robot0_gripper_qpos]
+    cameras:
+      agentview: observation.images.agentview
+      robot0_eye_in_hand: observation.images.wrist

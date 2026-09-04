@@ -77,7 +77,7 @@ class PolicyTrainer:
         device,
         train_dataloader=None,
         val_dataloader=None,
-        eval_env=None,
+        eval_env_factory=None,
         preprocessor=None,
         postprocessor=None,
     ):
@@ -91,7 +91,11 @@ class PolicyTrainer:
         self.step_counter = 0
         self.train_dataloader = train_dataloader
         self.val_dataloader = val_dataloader
-        self.eval_env = eval_env
+        # env 객체가 아니라 팩토리를 받는다. 시뮬 env 를 학습 내내 열어두면 그 GL
+        # 컨텍스트가 살아 있는 채로 DataLoader 워커가 fork 되고, fork 된 자식이 같은
+        # 컨텍스트를 물려받으면 드라이버가 프로세스를 죽인다(2026-09-04, lift 학습이
+        # step 8000 에서 SIGABRT). 평가 순간에만 열었다 닫으면 그 자리가 없다.
+        self.eval_env_factory = eval_env_factory
 
         num_total_steps = self.config.train.steps
 
@@ -234,8 +238,20 @@ class PolicyTrainer:
         model.eval()
         cfg = self.config
         image_keys = list(cfg.task.image_keys)
-        eval_info = eval_policy(
-            self.eval_env,
+        env = self.eval_env_factory()
+        try:
+            eval_info = self._rollout(env, model, cfg, image_keys)
+        finally:
+            env.close()
+
+        if self.config.use_ema and self.ema is not None:
+            self.ema.restore(model.parameters())
+
+        return eval_info
+
+    def _rollout(self, env, model, cfg, image_keys):
+        return eval_policy(
+            env,
             make_predict_fn(model, cfg, self.device,
                             preprocessor=self.preprocessor, postprocessor=self.postprocessor),
             cfg.val.eval_n_episodes,
@@ -247,11 +263,6 @@ class PolicyTrainer:
             max_episodes_rendered=cfg.val.num_viz_videos,
             video_key=image_keys[0] if image_keys else None,
         )
-
-        if self.config.use_ema and self.ema is not None:
-            self.ema.restore(model.parameters())
-
-        return eval_info
 
     def train(self, num_steps=None, start_step=0):
         import time
@@ -292,7 +303,7 @@ class PolicyTrainer:
                 self.step_counter % self.config.val.val_offline_freq == 0
             )
             is_val_online_step = (
-                self.eval_env and
+                self.eval_env_factory is not None and
                 self.config.val.val_online_freq > 0 and
                 self.step_counter % self.config.val.val_online_freq == 0
             )
@@ -467,14 +478,15 @@ def train(cfg: DictConfig):
 
     # Online evaluation: rollout success rate. This is what training is judged
     # by — offline loss is not it.
-    eval_env = None
+    eval_env_factory = None
     if cfg.val.val_online_freq > 0:
         if not is_sim_task(cfg.task):
             raise ValueError(
                 f"task '{cfg.task.name}' 은 실물이라 학습 중 rollout 평가를 할 수 없다. "
                 "val.val_online_freq=0 으로 두고 별도로 평가한다."
             )
-        eval_env = make_eval_env(cfg.task)
+        # 지금 만들지 않는다 — PolicyTrainer.__init__ 주석 참고.
+        eval_env_factory = lambda: make_eval_env(cfg.task)  # noqa: E731
 
     runner = PolicyTrainer(
         cfg,
@@ -482,7 +494,7 @@ def train(cfg: DictConfig):
         device=cfg.device,
         train_dataloader=train_dataloader,
         val_dataloader=val_dataloader,
-        eval_env=eval_env,
+        eval_env_factory=eval_env_factory,
         preprocessor=preprocessor,
         postprocessor=postprocessor,
     )
@@ -506,10 +518,6 @@ def train(cfg: DictConfig):
         num_steps=cfg.train.steps,
         start_step=start_step,
     )
-
-    # Cleanup
-    if eval_env:
-        eval_env.close()
 
     logger.info("Training completed!")
 

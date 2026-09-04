@@ -170,14 +170,19 @@ def create_dataloader(dataset, cfg: DictConfig, is_training=True):
 
     batch_size = cfg.train.batch_size if is_training else cfg.val.batch_size
 
+    num_workers = cfg.train.num_workers
     dataloader = torch.utils.data.DataLoader(
         dataset,
-        num_workers=cfg.train.num_workers,
+        num_workers=num_workers,
         batch_size=batch_size,
         shuffle=shuffle,
         sampler=sampler,
         pin_memory=True,
         drop_last=False,
+        # 학습 루프가 epoch 마다 이터레이터를 새로 만들기 때문에, 이 옵션이 없으면
+        # 워커를 매 epoch fork 한다(lift 는 127 스텝마다). fork 는 부모 프로세스를
+        # 통째로 복제하므로 횟수를 줄이는 것 자체가 이득이다.
+        persistent_workers=num_workers > 0,
     )
     return dataloader
 
