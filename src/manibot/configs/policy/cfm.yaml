@@ -1,7 +1,5 @@
 # @package _global_
 
-crop_shape: [216, 288]
-
 policy:
   name: cfm
   action_horizon: 8

@@ -6,8 +6,11 @@
 # match our 10 Hz data (~5 s prediction window, comparable to the 4 s used
 # in the original ACT paper on 50 Hz Aloha data).
 
+# ACT 는 백본(ResNet) stride 때문에 crop 이 32 의 배수여야 한다 — 그래서 task 값을
+# 덮어쓴다(defaults 순서상 policy 가 task 를 이긴다). 이미지가 작은 task 에 ACT 를
+# 쓰려면 여기 값도 그 해상도에 맞게 바꿔야 한다(예: 84x84 -> 64x64).
 resize_shape: [240, 320]
-crop_shape: [224, 288]  # 224/32 = 7, 288/32 = 9 — clean ResNet layer4 dims
+crop_shape: [224, 288]  # 224/32 = 7, 288/32 = 9
 
 policy:
   name: act
