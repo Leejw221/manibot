@@ -43,8 +43,4 @@ pip install -e '.[train]'     # 학습
 
 ## 만든 방식
 
-[LeRobot](https://github.com/huggingface/lerobot) 의 구조와 정책 구현을 따르고, 기존 저장소
-(`manipulation_pipeline` · `manipulation_simulator`)의 코드를 옮겨 구성했다. 정리 작업은
-Claude Code 로 진행했다.
-
-라이선스는 `LICENSE-VITA` 를 따른다.
+[LeRobot](https://github.com/huggingface/lerobot) 의 구조와 정책 구현을 참고했다. 정리 작업은 Claude Code로 진행했다.
