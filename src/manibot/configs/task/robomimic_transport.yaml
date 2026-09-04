@@ -16,7 +16,7 @@ task:
   fps: 20
   action_dim: 14
 
-  hdf5_path: ${oc.env:MANIBOT_DATASETS_DIR,data}/robomimic/transport/ph/transport_image_v15.hdf5
+  hdf5_path: ${oc.env:MANIBOT_DATASETS_DIR,data}/transport/ph/transport_image_v15.hdf5
   dataset_repo_id: null
   dataset_root: ${oc.env:MANIBOT_DATASETS_DIR,data}/robomimic_transport
 

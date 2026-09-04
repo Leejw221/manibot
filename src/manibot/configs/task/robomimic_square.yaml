@@ -17,7 +17,7 @@ task:
   fps: 20
   action_dim: 7
 
-  hdf5_path: ${oc.env:MANIBOT_DATASETS_DIR,data}/robomimic/square/ph/square_image_v15.hdf5
+  hdf5_path: ${oc.env:MANIBOT_DATASETS_DIR,data}/square/ph/square_image_v15.hdf5
   dataset_repo_id: null
   dataset_root: ${oc.env:MANIBOT_DATASETS_DIR,data}/robomimic_square
 

@@ -85,6 +85,8 @@ def log_dataset_image_resolution(cfg: DictConfig, dataset_meta) -> None:
     --resize) next to what this run's resize_shape/crop_shape expect, so a mismatch
     between the two (independently-maintained) values shows up at the start of
     training instead of as a silent blur or a crop-size error mid-run."""
+    if cfg.get("resize_shape") is None:
+        return  # 데이터 해상도를 그대로 쓴다 — 맞춰볼 대상이 없다
     resize_shape = tuple(cfg.resize_shape)
     crop_shape = tuple(cfg.crop_shape) if cfg.get("crop_shape") else None
 
