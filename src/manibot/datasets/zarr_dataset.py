@@ -1,8 +1,7 @@
 """zarr(ReplayBuffer) -> Diffusion Policy 공통 batch dict 어댑터.
 
 robomimic 벤치마크가 아닌 task(현재: Piper sort_return, collect.py로 수집(lerobot 저장) +
-convert_lerobot_to_zarr.py로 변환)용. robomimic_dataset.py의 RobomimicSequenceDataset과
-동일한 __getitem__ 계약(obs/action/action_mask/demo_id/index_in_demo)을 만족시켜
+convert 로 변환)용. __getitem__ 계약(obs/action/action_mask/demo_id/index_in_demo)을 지켜
 diffusion_trainer.py가 데이터 소스만 바꿔 그대로 재사용한다(weighting 모듈도 이 일반
 계약만 보고 동작 - robomimic 내부 API에 의존 안 함, 2026-07-26 확인).
 
@@ -42,7 +41,7 @@ class ZarrSequenceDataset(torch.utils.data.Dataset):
             self._index.extend((demo_id, t) for t in range(end - start))
 
     def get_action_mode_first_frame(self):
-        """샘플(윈도우)별 대표 action_mode - robomimic_dataset.RobomimicSequenceDataset.
+        """샘플(윈도우)별 대표 action_mode - 이 데이터셋의 계약.
         get_action_mode_first_frame과 동일 계약(그 윈도우의 행동 청크가 시작하는 프레임의
         라벨). apo_sampler.build_balanced_sampler가 배치 구성 이전에 전체 인덱스에 대해
         한 번에 필요로 한다(2026-07-27 밤)."""
