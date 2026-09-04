@@ -339,7 +339,16 @@ def robot_mjcf(src_mjcf):
         if f:
             m.set("file", "meshes/" + os.path.basename(f))
 
-    # 5) 액추에이터는 robosuite 가 토크 제어를 전제하므로 motor 로. 그리퍼 것은 뺀다.
+    # 5) 관절 물리값은 제조사 MuJoCo 모델(agx_arm_sim/mujoco/agilex_arm/agilex_nero/nero.xml)
+    #    을 따른다 — URDF 에는 없는 값이다. damping 은 제조사도 nero.xml 에선 0 이다
+    #    (damping 2000 은 위치제어용 nero_arm.xml 쪽) [대조 2026-09-05].
+    for j in root.iter("joint"):
+        if "gripper" in (j.get("name") or ""):
+            continue
+        j.set("armature", "0.005")
+        j.set("frictionloss", "0.3")
+
+    # 6) 액추에이터는 robosuite 가 토크 제어를 전제하므로 motor 로. 그리퍼 것은 뺀다.
     _drop(root, lambda c: c.tag in ("actuator", "equality"))
     act = ET.SubElement(root, "actuator")
     for s in ("right", "left"):

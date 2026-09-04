@@ -15,6 +15,7 @@ import numpy as np
 from robosuite.models.grippers import register_gripper
 from robosuite.models.grippers.gripper_model import GripperModel
 from robosuite.models.robots.manipulators.manipulator_model import ManipulatorModel
+from robosuite.controllers import load_composite_controller_config
 from robosuite.robots import register_robot_class
 
 ASSETS = os.path.join(os.path.dirname(os.path.abspath(__file__)), "assets")
@@ -131,3 +132,25 @@ class Nero(ManipulatorModel):
     def _eef_name(self):
         # build_assets.py 가 link7 밑에 만들어 두는 그리퍼 부착점 body 이름.
         return {"right": "right_hand", "left": "left_hand"}
+
+
+def controller_config(controller: str = "BASIC") -> dict:
+    """NERO 용 컨트롤러 설정.
+
+    ⚠️ robosuite 기본값은 `input_ref_frame="base"` 인데, NERO 는 팔이 몸통 옆면에 ±90°
+    돌아 붙어 있어 그 프레임에서는 **축이 뒤바뀐다** — `x+` 를 명령하면 말단이 −y 로 간다
+    [실측 2026-09-05]. 고정 설치 로봇이므로 world 기준으로 두는 게 맞다.
+
+    ⚠️ 양팔 action 배치는 `[right 6, left 6, right_grip 1, left_grip 1]` 이다.
+    단일팔(Panda)의 `[pos3, ori3, grip1]` 을 그대로 적용하면 왼팔 명령이 밀려 들어간다.
+    """
+    cfg = load_composite_controller_config(controller=controller, robot="Nero")
+    for arm in ("right", "left"):
+        cfg["body_parts"][arm]["input_ref_frame"] = "world"
+    return cfg
+
+
+# 양팔 action 벡터에서 각 팔의 위치 delta 가 놓이는 자리 [실측 2026-09-05]
+ARM_POS_SLICE = {"right": slice(0, 3), "left": slice(6, 9)}
+ARM_ORI_SLICE = {"right": slice(3, 6), "left": slice(9, 12)}
+GRIPPER_INDEX = {"right": 12, "left": 13}
