@@ -1,0 +1,9 @@
+defaults:
+  - task: robomimic_square
+  - _self_
+
+# null 이면 task.hdf5_path 을 그대로 쓴다 — 라운드 누적 파일 등 다른 hdf5 를 변환하려면 지정.
+hdf5_path: null
+# 원본 hdf5 의 mask 서브셋(예: demo20)만 변환하려면 지정. 이미 필터링된 파일이면 null.
+filter_key: null
+zarr_path: ???

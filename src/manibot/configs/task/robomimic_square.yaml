@@ -1,31 +1,35 @@
 # @package _global_
 
-resize_shape: [256, 256]
-crop_shape: [224, 224]
+# robosuite 가 84x84 로 렌더하므로 따로 줄이지 않는다.
+resize_shape: null
+crop_shape: [76, 76]
 
 task:
   name: robomimic_square
-  dataset_repo_id: iantc104/robomimic_sim_square
-  dataset_root: ${oc.env:MANIBOT_DATASETS_DIR}/iantc104/robomimic_sim_square
-  dataset_episodes: null
-  override_stats:
-    observation.images.agentview_image:
-      mean: [[[0.485]], [[0.456]], [[0.406]]]
-      std: [[[0.229]], [[0.224]], [[0.225]]]
 
-  env_package: gym_robomimic
-  env_name: square-v0
-  env_kwargs:
-    max_episode_steps: 400
-
-  fps: 20 # <<< Robomimic is 20 FPS
-  image_keys: [observation.images.agentview_image]
-
+  # 학습·평가가 보는 유일한 이름 (실물·시뮬 공통 규약)
+  image_keys:
+    - observation.images.agentview
+    - observation.images.wrist
   state_key: observation.state
   action_key: action
-  state_dim: 43
-  action_dim: 7  # <<< 6D delta pose + 1D gripper action
+  state_dim: 9      # 3 + 4 + 2. derive_task_meta 가 데이터에서 다시 읽는다
+  action_dim: 7
 
-val:
-    eval_n_episodes: 20
-    eval_n_envs: 5
+  dataset_backend: zarr
+  hdf5_path: ${oc.env:MANIBOT_DATASETS_DIR,data}/robomimic/square/ph/square_image_v15.hdf5
+  zarr_path: ${oc.env:MANIBOT_DATASETS_DIR,data}/robomimic_square.zarr
+
+  # 시뮬 백엔드. robosuite 고유 이름은 이 블록 안에만 존재한다.
+  sim:
+    backend: robosuite
+    env_name: NutAssemblySquare
+    robots: Panda
+    image_size: 84
+    gripper_types: null
+    env_kwargs: null
+    # 이 순서가 곧 observation.state 의 성분 순서다 — 변환과 평가가 같은 순서를 써야 한다.
+    state_from: [robot0_eef_pos, robot0_eef_quat, robot0_gripper_qpos]
+    cameras:
+      agentview: observation.images.agentview
+      robot0_eye_in_hand: observation.images.wrist

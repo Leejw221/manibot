@@ -1,0 +1,32 @@
+# @package _global_
+
+resize_shape: null
+crop_shape: [76, 76]
+
+task:
+  name: door_cabinet
+
+  image_keys:
+    - observation.images.agentview
+    - observation.images.wrist
+  state_key: observation.state
+  action_key: action
+  state_dim: 18     # 3 + 4 + 11 (RobotiqThreeFingerGripper 라 gripper_qpos 가 11 이다)
+  action_dim: 7
+
+  dataset_backend: zarr
+  hdf5_path: ${oc.env:MANIBOT_DATASETS_DIR,data}/door_cabinet/door_cabinet_demos_image.hdf5
+  zarr_path: ${oc.env:MANIBOT_DATASETS_DIR,data}/door_cabinet.zarr
+
+  sim:
+    backend: robosuite
+    # manibot.envs.door_cabinet 이 import 부수효과로 robosuite 레지스트리에 등록한다.
+    env_name: DoorCabinet
+    robots: Panda
+    gripper_types: RobotiqThreeFingerGripper
+    image_size: 84
+    env_kwargs: null
+    state_from: [robot0_eef_pos, robot0_eef_quat, robot0_gripper_qpos]
+    cameras:
+      agentview: observation.images.agentview
+      robot0_eye_in_hand: observation.images.wrist

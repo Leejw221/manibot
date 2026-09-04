@@ -33,10 +33,21 @@ import hydra
 import numpy as np
 from omegaconf import DictConfig
 
-from manibot.utils.task_utils import is_image_task, task_lowdim_keys
+from omegaconf import OmegaConf
+
+from manibot.utils.task_utils import is_image_task
 
 
-def convert_hdf5_to_zarr(hdf5_path, zarr_path, lowdim_keys, rgb_keys, filter_key=None):
+def convert_hdf5_to_zarr(hdf5_path, zarr_path, state_from, cameras,
+                         state_key="observation.state", action_key="action", filter_key=None):
+    """robomimic hdf5 -> zarr. 이때 robosuite 이름을 lerobot 이름으로 바꾼다.
+
+    state_from 을 그 순서대로 이어붙여 state_key 하나로 만든다 — 평가 때 env 어댑터
+    (envs.robomimic.wrap_lerobot_obs)가 쓰는 순서와 반드시 같아야 한다. 둘이 어긋나면
+    학습과 평가가 서로 다른 상태 벡터를 보게 되고, 그 차이는 에러 없이 성능으로만 나타난다.
+
+    cameras: {robosuite 카메라 이름: lerobot 이미지 키}. hdf5 의 "<cam>_image" 를 읽는다.
+    """
     from manibot.datasets.replay_buffer import ReplayBuffer
 
     with h5py.File(hdf5_path, "r") as fin:
@@ -49,14 +60,19 @@ def convert_hdf5_to_zarr(hdf5_path, zarr_path, lowdim_keys, rgb_keys, filter_key
         buffer = ReplayBuffer.create_from_path(zarr_path, mode="a")
         for name in demo_names:
             demo = fin[f"data/{name}"]
-            data = {key: demo["obs"][key][()].astype(np.float32) for key in lowdim_keys}
-            for key in rgb_keys:
-                data[key] = demo["obs"][key][()]  # 이미 raw(HWC, uint8) - 변환 불필요
-            data["action"] = demo["actions"][()].astype(np.float32)
+            obs = demo["obs"]
+            data = {
+                state_key: np.concatenate(
+                    [obs[k][()].astype(np.float32).reshape(len(obs[k]), -1) for k in state_from], axis=-1
+                ),
+                action_key: demo["actions"][()].astype(np.float32),
+            }
+            for cam, key in cameras.items():
+                data[key] = obs[f"{cam}_image"][()]  # 이미 raw(HWC, uint8) - 변환 불필요
             if "action_mode" in demo:
                 data["action_mode"] = demo["action_mode"][()].astype(np.int64)
             buffer.add_episode(data)
-            print(f"{name}: {len(data['action'])} frames -> zarr (누적 {buffer.n_steps} steps)")
+            print(f"{name}: {len(data[action_key])} frames -> zarr (누적 {buffer.n_steps} steps)")
 
     print(f"변환 완료: {len(demo_names)} demos, {buffer.n_steps} steps -> {zarr_path}")
     return zarr_path
@@ -64,10 +80,14 @@ def convert_hdf5_to_zarr(hdf5_path, zarr_path, lowdim_keys, rgb_keys, filter_key
 
 @hydra.main(config_path="../configs", config_name="convert_hdf5_to_zarr", version_base=None)
 def main(cfg: DictConfig):
-    rgb_keys = list(cfg.task.rgb_keys) if is_image_task(cfg.task) else []
-    lowdim_keys = task_lowdim_keys(cfg.task)
+    sim = cfg.task.sim
+    cameras = OmegaConf.to_container(sim.cameras, resolve=True) if is_image_task(cfg.task) else {}
     hdf5_path = cfg.get("hdf5_path", None) or cfg.task.hdf5_path
-    convert_hdf5_to_zarr(hdf5_path, cfg.zarr_path, lowdim_keys, rgb_keys, filter_key=cfg.get("filter_key", None))
+    convert_hdf5_to_zarr(
+        hdf5_path, cfg.zarr_path, list(sim.state_from), cameras,
+        state_key=cfg.task.state_key, action_key=cfg.task.action_key,
+        filter_key=cfg.get("filter_key", None),
+    )
 
 
 if __name__ == "__main__":

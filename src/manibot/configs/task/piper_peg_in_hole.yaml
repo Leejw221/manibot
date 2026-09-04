@@ -24,9 +24,11 @@ task:
       mean: [[[0.485]], [[0.456]], [[0.406]]]
       std: [[[0.229]], [[0.224]], [[0.225]]]
 
-  env_package: null
-  env_name: null
-  env_kwargs: null
+  dataset_backend: zarr
+  zarr_path: ${task.dataset_root}
+
+  # 실물 task — 시뮬 백엔드가 없다. make_eval_env 는 이 값을 보고 거절한다.
+  sim: null
 
   # convert.py --target-fps 10으로 30fps 원본을 10fps로 다운샘플링해서 저장하므로,
   # 여기 fps도 반드시 실제 변환된 데이터 fps(10)와 일치해야 함 — dataset_utils.py가

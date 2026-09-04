@@ -1,31 +1,29 @@
 # @package _global_
 
-resize_shape: [256, 256]
-crop_shape: [224, 224]
+resize_shape: null
+crop_shape: null
 
 task:
   name: robomimic_can
-  dataset_repo_id: iantc104/robomimic_sim_can
-  dataset_root: ${oc.env:MANIBOT_DATASETS_DIR}/iantc104/robomimic_sim_can
-  dataset_episodes: null
-  override_stats:
-    observation.images.agentview_image:
-      mean: [[[0.485]], [[0.456]], [[0.406]]]
-      std: [[[0.229]], [[0.224]], [[0.225]]]
 
-  env_package: gym_robomimic
-  env_name: can-v0
-  env_kwargs:
-    max_episode_steps: 200
-
-  fps: 20 # <<< Robomimic is 20 FPS
-  image_keys: [observation.images.agentview_image]
-
+  # low-dim task — 카메라를 쓰지 않는다.
+  image_keys: []
   state_key: observation.state
   action_key: action
-  state_dim: 43
-  action_dim: 7  # <<< 6D delta pose + 1D gripper action
+  state_dim: 23     # 3 + 4 + 2 + 14(object)
+  action_dim: 7
 
-val:
-    eval_n_episodes: 20
-    eval_n_envs: 5
+  dataset_backend: zarr
+  hdf5_path: ${oc.env:MANIBOT_DATASETS_DIR,data}/robomimic/can/ph/low_dim_v15.hdf5
+  zarr_path: ${oc.env:MANIBOT_DATASETS_DIR,data}/robomimic_can.zarr
+
+  sim:
+    backend: robosuite
+    # 데이터셋 이름은 "can" 이지만 robosuite env_name 은 다르다 [검증: hdf5 env_args 확인]
+    env_name: PickPlaceCan
+    robots: Panda
+    image_size: 84
+    gripper_types: null
+    env_kwargs: null
+    state_from: [robot0_eef_pos, robot0_eef_quat, robot0_gripper_qpos, object]
+    cameras: {}

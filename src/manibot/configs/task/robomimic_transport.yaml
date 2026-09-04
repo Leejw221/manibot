@@ -1,31 +1,64 @@
 # @package _global_
 
-resize_shape: [256, 256]
-crop_shape: [224, 224]
+resize_shape: null
+crop_shape: [76, 76]
 
 task:
   name: robomimic_transport
-  dataset_repo_id: iantc104/robomimic_sim_transport
-  dataset_root: ${oc.env:MANIBOT_DATASETS_DIR}/iantc104/robomimic_sim_transport
-  dataset_episodes: null
-  override_stats:
-    observation.images.agentview_image:
-      mean: [[[0.485]], [[0.456]], [[0.406]]]
-      std: [[[0.229]], [[0.224]], [[0.225]]]
 
-  env_package: gym_robomimic
-  env_name: transport-v0
-  env_kwargs:
-    max_episode_steps: 700
-
-  fps: 20 # <<< Robomimic is 20 FPS
-  image_keys: [observation.images.agentview_image]
-
+  image_keys:
+    - observation.images.agentview
+    - observation.images.wrist_left
+    - observation.images.wrist_right
   state_key: observation.state
   action_key: action
-  state_dim: 9   # <<< Proprioceptive state dim for Panda arm (7 joints + 2 gripper)
-  action_dim: 14  # <<< 6D delta pose + 1D gripper action
+  state_dim: 18     # (3 + 4 + 2) x 2팔
+  action_dim: 14
 
-val:
-    eval_n_episodes: 20
-    eval_n_envs: 5
+  dataset_backend: zarr
+  hdf5_path: ${oc.env:MANIBOT_DATASETS_DIR,data}/robomimic/transport/ph/transport_image_v15.hdf5
+  zarr_path: ${oc.env:MANIBOT_DATASETS_DIR,data}/robomimic_transport.zarr
+
+  sim:
+    backend: robosuite
+    env_name: TwoArmTransport
+    robots: [Panda, Panda]
+    image_size: 84
+    gripper_types: null
+    state_from:
+      - robot0_eef_pos
+      - robot0_eef_quat
+      - robot0_gripper_qpos
+      - robot1_eef_pos
+      - robot1_eef_quat
+      - robot1_gripper_qpos
+    cameras:
+      agentview: observation.images.agentview
+      robot0_eye_in_hand: observation.images.wrist_left
+      robot1_eye_in_hand: observation.images.wrist_right
+    env_kwargs:
+      env_configuration: single-arm-opposed
+      lite_physics: false
+      controller_configs:
+        type: BASIC
+        body_parts:
+          right:
+            type: OSC_POSE
+            input_max: 1
+            input_min: -1
+            output_max: [0.05, 0.05, 0.05, 0.5, 0.5, 0.5]
+            output_min: [-0.05, -0.05, -0.05, -0.5, -0.5, -0.5]
+            kp: 150
+            damping: 1
+            impedance_mode: fixed
+            kp_limits: [0, 300]
+            damping_limits: [0, 10]
+            position_limits: null
+            orientation_limits: null
+            uncouple_pos_ori: true
+            control_delta: true
+            interpolation: null
+            ramp_ratio: 0.2
+            input_ref_frame: world
+            gripper:
+              type: GRIP

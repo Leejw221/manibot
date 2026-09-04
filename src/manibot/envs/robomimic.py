@@ -3,6 +3,7 @@
 ObsUtils 초기화가 env 생성 전에 필요, MUJOCO_GL=egl 권장(오프스크린 렌더).
 """
 
+import numpy as np
 import robomimic.utils.obs_utils as ObsUtils
 from robomimic.envs.env_robosuite import EnvRobosuite
 
@@ -95,3 +96,43 @@ def make_image_env(env_name, robots, lowdim_keys, rgb_keys, camera_names, image_
         **kwargs,
     )
     return env
+
+
+class _LeRobotObsEnv:
+    """robosuite 관측을 lerobot 이름으로 바꿔 내보내는 얇은 래퍼.
+
+    시뮬과 실물이 같은 학습·평가 코드를 쓰려면 관측 이름이 한 벌이어야 한다. robosuite 는
+    proprio 를 robot0_eef_pos 처럼 여러 배열로 쪼개 주므로 state_from 순서대로 이어붙여
+    observation.state 하나로 만든다 — 그 순서가 곧 데이터셋의 상태 벡터 순서이므로
+    수집·변환·평가가 모두 같은 값을 써야 한다.
+
+    이미지는 robosuite 가 이미 (C, H, W) float32 [0, 1] 로 주므로 이름만 바꾼다.
+    """
+
+    def __init__(self, env, state_from, cameras, state_key="observation.state"):
+        self._env = env
+        self._state_from = list(state_from)
+        self._cameras = dict(cameras)
+        self._state_key = state_key
+
+    def _convert(self, obs):
+        state = np.concatenate([np.asarray(obs[k]).ravel() for k in self._state_from])
+        out = {self._state_key: state.astype(np.float32)}
+        for cam, key in self._cameras.items():
+            out[key] = obs[f"{cam}_image"]
+        return out
+
+    def reset(self):
+        return self._convert(self._env.reset())
+
+    def step(self, action):
+        obs, reward, done, info = self._env.step(action)
+        return self._convert(obs), reward, done, info
+
+    def __getattr__(self, name):
+        # is_success · action_dimension · env 등 나머지는 그대로 위임한다.
+        return getattr(object.__getattribute__(self, "_env"), name)
+
+
+def wrap_lerobot_obs(env, state_from, cameras, state_key="observation.state"):
+    return _LeRobotObsEnv(env, state_from, cameras, state_key)
