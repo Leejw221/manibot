@@ -339,6 +339,16 @@ def robot_mjcf(src_mjcf):
         if f:
             m.set("file", "meshes/" + os.path.basename(f))
 
+    # 4-b) 볼록껍질 artifact 제외. MuJoCo 는 메시 충돌을 볼록껍질로 근사해서 인접·근접
+    #      링크의 껍질이 겹친다 — 영자세에서 base↔link1 5mm, link5↔link7 28.5mm(사이 link6
+    #      이 짧다)가 잡히는데 실제 간섭이 아니다 [실측 2026-09-01].
+    #      ⚠️ link7↔몸통은 **빼지 않는다** — 그건 진짜 제약이라 자세로 피해야 한다.
+    con = ET.SubElement(root, "contact")
+    for s_ in ("right", "left"):
+        ET.SubElement(con, "exclude", {"body1": "base", "body2": f"{s_}_link1"})
+        for a, b in ((5, 7), (4, 6), (5, 6), (6, 7)):
+            ET.SubElement(con, "exclude", {"body1": f"{s_}_link{a}", "body2": f"{s_}_link{b}"})
+
     # 5) 관절 물리값은 제조사 MuJoCo 모델(agx_arm_sim/mujoco/agilex_arm/agilex_nero/nero.xml)
     #    을 따른다 — URDF 에는 없는 값이다. damping 은 제조사도 nero.xml 에선 0 이다
     #    (damping 2000 은 위치제어용 nero_arm.xml 쪽) [대조 2026-09-05].

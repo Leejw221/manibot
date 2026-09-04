@@ -23,6 +23,8 @@ ASSETS = os.path.join(os.path.dirname(os.path.abspath(__file__)), "assets")
 # 실측값 [메시·MJCF 실측 2026-09-04~05]
 GRIPPER_OPEN = 0.05        # 손가락 하나당 여는 거리 -> 개구 0.10 m
 SHOULDER_Z = 1.08          # 어깨축 높이 (받침대 포함)
+# 왼팔 관절값 = 오른팔 * MIRROR. 부호조합 전수 탐색으로 확정 [2026-09-05].
+MIRROR = np.array([-1.0, 1.0, -1.0, 1.0, -1.0, -1.0, 1.0])
 
 
 @register_gripper
@@ -101,12 +103,17 @@ class Nero(ManipulatorModel):
 
     @property
     def init_qpos(self):
-        # side mount 는 좌우 roll 이 반대라 **joint1 만** 부호를 뒤집어야 대칭이 된다
-        # [실측 2026-09-04]. 같은 값을 양쪽에 넣으면 한 팔이 위로 솟는다.
-        right = np.array([-np.pi / 2, -np.pi / 2, 0.0, np.pi / 6, 0.0, 0.0, 0.0])
-        left = right.copy()
-        left[0] = -left[0]
-        return np.concatenate([right, left])
+        """작업 자세 — 손이 몸 앞 x~0.40 · z~0.83 에 오게 잡았다.
+
+        관절공간 4만 개를 훑어 목표 영역(x .30~.50 · z .70~1.00)에 드는 자세 중
+        **관절 한계 여유가 가장 큰 것**을 골랐다(최소 여유 31°) [탐색 2026-09-05].
+        이전 자세는 팔을 옆으로 내린 모양이라 손이 z 0.42~0.67 에 갇혀 작업대에 안 닿았다.
+
+        왼팔 미러는 부호조합 128 가지를 전수 탐색해 확정했다(y 대칭 오차 0.00 cm) —
+        side mount 라 좌우 roll 이 반대여서 전부 뒤집으면 맞지 않는다.
+        """
+        right = np.radians([122.2, 62.6, 49.8, 77.4, 103.8, -10.8, -50.6])
+        return np.concatenate([right, right * MIRROR])
 
     @property
     def base_xpos_offset(self):

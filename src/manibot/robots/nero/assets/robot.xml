@@ -118,6 +118,18 @@
       </body>
     </body>
   </worldbody>
+  <contact>
+    <exclude body1="base" body2="right_link1" />
+    <exclude body1="right_link5" body2="right_link7" />
+    <exclude body1="right_link4" body2="right_link6" />
+    <exclude body1="right_link5" body2="right_link6" />
+    <exclude body1="right_link6" body2="right_link7" />
+    <exclude body1="base" body2="left_link1" />
+    <exclude body1="left_link5" body2="left_link7" />
+    <exclude body1="left_link4" body2="left_link6" />
+    <exclude body1="left_link5" body2="left_link6" />
+    <exclude body1="left_link6" body2="left_link7" />
+  </contact>
   <actuator>
     <motor name="torq_right_j1" joint="right_joint1" ctrllimited="true" ctrlrange="-100 100" />
     <motor name="torq_right_j2" joint="right_joint2" ctrllimited="true" ctrlrange="-100 100" />
