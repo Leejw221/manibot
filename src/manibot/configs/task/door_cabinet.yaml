@@ -12,11 +12,12 @@ task:
   state_key: observation.state
   action_key: action
   state_dim: 18     # 3 + 4 + 11 (RobotiqThreeFingerGripper 라 gripper_qpos 가 11 이다)
+  fps: 20
   action_dim: 7
 
-  dataset_backend: zarr
   hdf5_path: ${oc.env:MANIBOT_DATASETS_DIR,data}/door_cabinet/door_cabinet_demos_image.hdf5
-  zarr_path: ${oc.env:MANIBOT_DATASETS_DIR,data}/door_cabinet.zarr
+  dataset_repo_id: null
+  dataset_root: ${oc.env:MANIBOT_DATASETS_DIR,data}/door_cabinet
 
   sim:
     backend: robosuite

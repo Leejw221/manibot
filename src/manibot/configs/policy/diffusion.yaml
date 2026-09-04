@@ -9,7 +9,6 @@ train:
 
 policy:
   name: diffusion
-  runner: policy_trainer
   action_horizon: 8
   pred_horizon: 16
   obs_horizon: 1

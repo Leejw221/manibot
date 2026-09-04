@@ -61,7 +61,7 @@ def make_json_serializable(obj):
         raise TypeError(f"Object of type {type(obj)} is not JSON serializable")
 
 
-def create_piper_dataset_from_lerobot(
+def create_zarr_dataset_from_lerobot(
     repo_id: str,
     root: Path,
     episodes: list[int] | None = None,
@@ -177,7 +177,7 @@ def create_piper_dataset_from_lerobot(
         dtype = features[k]["dtype"]
         if dtype in ["image", "video"]:
             # v: (N, C, H, W) float in [0, 1]. Optionally resize before storing so
-            # the zarr (loaded fully into RAM by PiperDataset) stays small.
+            # the zarr (loaded fully into RAM by ZarrDataset) stays small.
             if resize is not None:
                 v = torch.nn.functional.interpolate(
                     v, size=resize, mode="bilinear", align_corners=False
@@ -255,7 +255,7 @@ def main():
     auto_output_name = "piper_" + repo_id.split("/")[-1].replace("-", "_")
     output_dir = Path(args.output) if args.output else DEFAULT_OUTPUT_DIR / auto_output_name
 
-    create_piper_dataset_from_lerobot(
+    create_zarr_dataset_from_lerobot(
         repo_id=repo_id,
         root=output_dir,
         episodes=None,

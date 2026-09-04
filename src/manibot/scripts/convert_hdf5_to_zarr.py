@@ -25,7 +25,7 @@ num_workers=4로 OOM 없이 정상 진행).
 (hdf5_path을 생략하면 task.hdf5_path을 그대로 쓴다 - 원본 robomimic 데이터셋 변환용.)
 """
 
-import sys
+import json
 from pathlib import Path
 
 import h5py
@@ -38,15 +38,17 @@ from omegaconf import OmegaConf
 from manibot.utils.task_utils import is_image_task
 
 
-def convert_hdf5_to_zarr(hdf5_path, zarr_path, state_from, cameras,
+def convert_hdf5_to_zarr(hdf5_path, zarr_path, state_from, cameras, fps, task_name,
                          state_key="observation.state", action_key="action", filter_key=None):
-    """robomimic hdf5 -> zarr. 이때 robosuite 이름을 lerobot 이름으로 바꾼다.
+    """robomimic hdf5 -> zarr(ReplayBuffer) + config.json.
 
-    state_from 을 그 순서대로 이어붙여 state_key 하나로 만든다 — 평가 때 env 어댑터
-    (envs.robomimic.wrap_lerobot_obs)가 쓰는 순서와 반드시 같아야 한다. 둘이 어긋나면
-    학습과 평가가 서로 다른 상태 벡터를 보게 되고, 그 차이는 에러 없이 성능으로만 나타난다.
+    robosuite 이름을 lerobot 이름으로 바꾼다. state_from 을 그 순서대로 이어붙여
+    state_key 하나로 만드는데, 평가 때 env 어댑터(envs.robomimic.wrap_lerobot_obs)가
+    쓰는 순서와 반드시 같아야 한다 — 어긋나면 학습과 평가가 서로 다른 상태 벡터를
+    보게 되고, 그 차이는 에러 없이 성능으로만 나타난다.
 
-    cameras: {robosuite 카메라 이름: lerobot 이미지 키}. hdf5 의 "<cam>_image" 를 읽는다.
+    config.json 은 ZarrDataset 이 읽는 메타다. 실물 쪽 convert.py 와 같은 형식이라
+    실물·시뮬이 같은 Dataset 클래스를 쓴다.
     """
     from manibot.datasets.replay_buffer import ReplayBuffer
 
@@ -57,22 +59,63 @@ def convert_hdf5_to_zarr(hdf5_path, zarr_path, state_from, cameras,
             demo_names = list(fin["data"].keys())
         demo_names = sorted(demo_names, key=lambda k: int(k.split("_")[1]))
 
-        buffer = ReplayBuffer.create_from_path(zarr_path, mode="a")
-        for name in demo_names:
+        root = Path(zarr_path)
+        buffer = ReplayBuffer.create_from_path(str(root), mode="a")
+        acc = {state_key: [], action_key: []}   # 통계용 — 상태·행동만 모은다(작다)
+        image_shapes = {}
+
+        for ep_idx, name in enumerate(demo_names):
             demo = fin[f"data/{name}"]
             obs = demo["obs"]
+            n = len(demo["actions"])
             data = {
                 state_key: np.concatenate(
-                    [obs[k][()].astype(np.float32).reshape(len(obs[k]), -1) for k in state_from], axis=-1
+                    [obs[k][()].astype(np.float32).reshape(n, -1) for k in state_from], axis=-1
                 ),
                 action_key: demo["actions"][()].astype(np.float32),
+                # ZarrDataset 이 에피소드 경계·시간 정합을 이 둘로 검사한다.
+                "episode_index": np.full(n, ep_idx, dtype=np.int64),
+                "timestamp": (np.arange(n, dtype=np.float32) / fps),
             }
             for cam, key in cameras.items():
-                data[key] = obs[f"{cam}_image"][()]  # 이미 raw(HWC, uint8) - 변환 불필요
+                arr = obs[f"{cam}_image"][()]  # 이미 raw(HWC, uint8) - 변환 불필요
+                data[key] = arr
+                image_shapes[key] = list(arr.shape[1:])
             if "action_mode" in demo:
                 data["action_mode"] = demo["action_mode"][()].astype(np.int64)
+            for k in acc:
+                acc[k].append(data[k])
             buffer.add_episode(data)
-            print(f"{name}: {len(data[action_key])} frames -> zarr (누적 {buffer.n_steps} steps)")
+            print(f"{name}: {n} frames -> zarr (누적 {buffer.n_steps} steps)")
+
+    stats = {}
+    for k, chunks in acc.items():
+        a = np.concatenate(chunks, axis=0)
+        stats[k] = {
+            "mean": a.mean(axis=0).tolist(), "std": a.std(axis=0).tolist(),
+            "min": a.min(axis=0).tolist(), "max": a.max(axis=0).tolist(),
+        }
+    # 이미지 통계는 넣지 않는다 — task 설정의 override_stats 가 ImageNet 값을 준다
+    # (실물 쪽 piper_*.yaml 과 같은 관례). 전 프레임 평균/표준편차를 구하는 비용도 크다.
+    features = {
+        state_key: {"dtype": "float32", "shape": [len(stats[state_key]["mean"])]},
+        action_key: {"dtype": "float32", "shape": [len(stats[action_key]["mean"])]},
+        **{k: {"dtype": "image", "shape": v} for k, v in image_shapes.items()},
+    }
+    config = {
+        "repo_id": None,
+        "stats": stats,
+        "num_frames": int(buffer.n_steps),
+        "num_episodes": len(demo_names),
+        "features": features,
+        "camera_keys": list(image_shapes),
+        "video_keys": [],
+        "image_keys": list(image_shapes),
+        "fps": fps,
+        "tasks": {0: task_name},
+    }
+    with open(root / "config.json", "w") as f:
+        json.dump(config, f, indent=4)
 
     print(f"변환 완료: {len(demo_names)} demos, {buffer.n_steps} steps -> {zarr_path}")
     return zarr_path
@@ -84,7 +127,8 @@ def main(cfg: DictConfig):
     cameras = OmegaConf.to_container(sim.cameras, resolve=True) if is_image_task(cfg.task) else {}
     hdf5_path = cfg.get("hdf5_path", None) or cfg.task.hdf5_path
     convert_hdf5_to_zarr(
-        hdf5_path, cfg.zarr_path, list(sim.state_from), cameras,
+        hdf5_path, cfg.task.dataset_root, list(sim.state_from), cameras,
+        fps=cfg.task.fps, task_name=cfg.task.name,
         state_key=cfg.task.state_key, action_key=cfg.task.action_key,
         filter_key=cfg.get("filter_key", None),
     )

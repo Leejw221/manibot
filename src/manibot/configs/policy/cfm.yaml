@@ -4,7 +4,6 @@ crop_shape: [216, 288]
 
 policy:
   name: cfm
-  runner: policy_trainer
   action_horizon: 8
   pred_horizon: 16
   obs_horizon: 1

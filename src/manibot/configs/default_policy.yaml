@@ -48,10 +48,13 @@ train:
   use_amp: true
 
 # Validation settings
+# 데모 데이터는 전량 학습에 쓴다 — held-out 으로 빼두지 않는다. 성능 판단은 환경
+# rollout 성공률로 한다(val_online_freq). num_episodes>0 으로 두면 그만큼 학습에서
+# 빠지므로 기본값은 0 이다.
 val:
-  num_episodes: 2 # Validation set episodes
-  val_offline_freq: 200 # Validate on dataset
-  val_online_freq: 0 # Validate in environment (0 = disabled, no sim)
+  num_episodes: 0 # >0 이면 그 개수만큼 학습에서 빼 오프라인 검증에 쓴다
+  val_offline_freq: 0 # 데이터셋 상의 검증 (num_episodes>0 일 때만 의미가 있다)
+  val_online_freq: 0 # 환경 rollout 검증 (아직 배선 전 — scripts/train.py 참고)
   eval_n_episodes: 50
   eval_n_envs: 25
   batch_size: 128
@@ -74,5 +77,4 @@ wandb:
   tags:
     - ${task.name}
     - ${policy.name}
-    - ${policy.runner}
   upload_checkpoints: false

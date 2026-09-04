@@ -111,7 +111,7 @@ def plot_trajectory_with_vectors(ax, vel, traj):
 
 def create_denoising_plot(figsize=(15, 5)):
     fig, (ax1, ax2, ax3) = plt.subplots(1, 3, figsize=figsize)
-    fig.suptitle('Flare Visualization', fontsize=16, y=1.05)
+    fig.suptitle('Trajectory Visualization', fontsize=16, y=1.05)
     return fig, (ax1, ax2, ax3)
 
 

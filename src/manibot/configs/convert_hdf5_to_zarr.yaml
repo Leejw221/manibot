@@ -6,4 +6,3 @@ defaults:
 hdf5_path: null
 # 원본 hdf5 의 mask 서브셋(예: demo20)만 변환하려면 지정. 이미 필터링된 파일이면 null.
 filter_key: null
-zarr_path: ???

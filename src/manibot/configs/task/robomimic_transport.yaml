@@ -13,11 +13,12 @@ task:
   state_key: observation.state
   action_key: action
   state_dim: 18     # (3 + 4 + 2) x 2팔
+  fps: 20
   action_dim: 14
 
-  dataset_backend: zarr
   hdf5_path: ${oc.env:MANIBOT_DATASETS_DIR,data}/robomimic/transport/ph/transport_image_v15.hdf5
-  zarr_path: ${oc.env:MANIBOT_DATASETS_DIR,data}/robomimic_transport.zarr
+  dataset_repo_id: null
+  dataset_root: ${oc.env:MANIBOT_DATASETS_DIR,data}/robomimic_transport
 
   sim:
     backend: robosuite

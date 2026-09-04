@@ -7,10 +7,6 @@ hdf5->zarr 변환이 그 경계에서 이름을 바꾼다. 이렇게 두지 않�
 시뮬/실물마다 다른 키를 찾게 되고, 결국 분기가 남는다.
 """
 
-import json
-
-import h5py
-import numpy as np
 from omegaconf import OmegaConf
 
 
@@ -23,49 +19,18 @@ def is_image_task(task_cfg):
     return bool(task_cfg.get("image_keys", None))
 
 
-def uses_zarr_dataset(task_cfg):
-    """학습 데이터를 Zarr(ReplayBuffer)에서 읽을지. 시뮬레이터 선택과는 독립된 축이다 —
-    robosuite task 도 hdf5 를 zarr 로 변환해 쓸 수 있다(scripts/convert_hdf5_to_zarr.py)."""
-    return task_cfg.get("dataset_backend", "zarr") == "zarr"
-
-
-def _sim_state_dim(sim_cfg, obs):
-    return int(sum(np.asarray(obs[k]).size for k in sim_cfg.state_from))
-
-
-def derive_task_meta(task_cfg):
-    """state_dim·action_dim 을 데이터에서 읽어 task_cfg 에 덮어쓴다.
+def derive_task_meta(task_cfg, dataset_meta):
+    """state_dim·action_dim 을 데이터셋 메타(config.json)에서 읽어 task_cfg 에 덮어쓴다.
 
     손으로 적은 값과 데이터가 어긋나는 사고를 막기 위해 데이터를 유일한 출처로 삼는다
-    (2026-07-21 에 실제로 stage 스킴이 바뀌었는데 차원을 안 고쳐 생긴 사고가 있었다).
-    어떤 키를 쓸지(image_keys·state_from)는 데이터의 사실이 아니라 실험 설계 선택이라
-    건드리지 않는다.
+    (2026-07-21 에 실제로 관측 스킴이 바뀌었는데 차원을 안 고쳐 생긴 사고가 있었다).
+    어떤 키를 쓸지(image_keys·sim.state_from)는 데이터의 사실이 아니라 실험 설계
+    선택이라 건드리지 않는다.
     """
-    if uses_zarr_dataset(task_cfg):
-        from manibot.datasets.replay_buffer import ReplayBuffer
-
-        buffer = ReplayBuffer.create_from_path(str(task_cfg.zarr_path), mode="r")
-        state_dim = int(buffer.data[task_cfg.state_key].shape[-1])
-        action_dim = int(buffer.data[task_cfg.action_key].shape[-1])
-        env_meta = {}
-    else:
-        with h5py.File(task_cfg.hdf5_path, "r") as f:
-            demo0 = f["data/demo_0"]
-            action_dim = int(demo0["actions"].shape[-1])
-            state_dim = int(sum(demo0["obs"][k].shape[-1] for k in task_cfg.sim.state_from))
-            env_meta = json.loads(f["data"].attrs["env_args"]).get("env_kwargs", {})
-
+    features = dataset_meta.features
     OmegaConf.set_struct(task_cfg, False)
-    task_cfg.state_dim = state_dim
-    task_cfg.action_dim = action_dim
-    # 수집 시점의 env 구성도 데이터가 출처다 — task.yaml 과 어긋나면 평가가 조용히 달라진다.
-    if env_meta and is_sim_task(task_cfg):
-        if "robots" in env_meta:
-            task_cfg.sim.robots = env_meta["robots"]
-        task_cfg.sim.env_kwargs = {
-            k: env_meta[k] for k in ("env_configuration", "controller_configs", "lite_physics")
-            if k in env_meta
-        }
+    task_cfg.state_dim = int(features[task_cfg.state_key]["shape"][-1])
+    task_cfg.action_dim = int(features[task_cfg.action_key]["shape"][-1])
     OmegaConf.set_struct(task_cfg, True)
     return task_cfg
 
