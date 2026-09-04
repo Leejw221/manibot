@@ -116,13 +116,22 @@ def create_dataset(policy, cfg: DictConfig, episodes=None):
 
     logger.info(f"Creating dataset with repo_id={cfg.task.dataset_repo_id} and root={cfg.task.dataset_root}")
 
+    # 두 계열의 관측 창 규약이 다르다. 우리 이전 정책들은 창이 "지금"에서 시작하고
+    # (그래서 anchor_offset=obs_horizon-1 로 보정한다), LeRobot 은 창이 "지금"에서
+    # 끝나고 행동이 "지금"부터 시작한다(anchor_offset=0). obs_horizon=1 이면 둘이
+    # 같지만 늘리는 순간 갈라지므로 정책에게 물어본다.
+    if hasattr(policy, "get_observation_indices"):
+        obs_indices = policy.get_observation_indices()
+        action_indices = policy.get_action_indices()
+    else:
+        n_obs = cfg.policy.obs_horizon
+        obs_indices = list(range(-(n_obs - 1), 1))
+        action_indices = list(range(cfg.policy.pred_horizon))
+
     delta_timestamps = {
-        **{
-            k: [i / cfg.task.fps for i in policy.get_observation_indices()]
-            for k in cfg.task.image_keys
-        },
-        cfg.task.state_key: [i / cfg.task.fps for i in policy.get_observation_indices()],
-        cfg.task.action_key: [i / cfg.task.fps for i in policy.get_action_indices()],
+        **{k: [i / cfg.task.fps for i in obs_indices] for k in cfg.task.image_keys},
+        cfg.task.state_key: [i / cfg.task.fps for i in obs_indices],
+        cfg.task.action_key: [i / cfg.task.fps for i in action_indices],
     }
 
     logger.info(f"Delta timestamps:\n{pformat(delta_timestamps, indent=4)}")

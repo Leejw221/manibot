@@ -12,6 +12,10 @@ policy:
   obs_horizon: 1
 
   # Vision encoder
+  # 원본 Diffusion Policy 구현을 따른다 — scratch ResNet18 의 BatchNorm 을 GroupNorm 으로
+  # 바꾼다. 사전학습 가중치와는 같이 못 쓴다(GroupNorm 교체가 그 가중치를 망가뜨린다).
+  use_group_norm: true
+  pretrained_backbone_weights: null
   crop_is_random: true
   spatial_softmax_num_keypoints: 32
   use_separate_rgb_encoder_per_camera: true

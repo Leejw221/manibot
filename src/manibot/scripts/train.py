@@ -19,7 +19,7 @@ import numpy as np
 import torch
 from omegaconf import DictConfig, OmegaConf
 
-from manibot.policies.factory import get_policy_class
+from manibot.policies.factory import make_policy
 from manibot.utils.checkpoints import get_latest_checkpoint, load_model_weights
 from manibot.utils.dataset_utils import (
     create_dataloader,
@@ -37,6 +37,38 @@ from manibot.utils.task_utils import derive_task_meta, is_sim_task, make_eval_en
 logger = logging.getLogger(__name__)
 
 
+
+def _build_optimizer(policy, cfg):
+    """LeRobot 정책은 get_optim_params() 로 파라미터만 주고, 우리 이전 정책들은
+    스스로 옵티마이저를 만든다(ACT 는 백본에 다른 lr 을 쓴다)."""
+    if hasattr(policy, "get_optimizer"):
+        return policy.get_optimizer()
+    return torch.optim.AdamW(
+        policy.get_optim_params(),
+        lr=cfg.optimizer_lr, betas=tuple(cfg.optimizer_betas),
+        eps=cfg.optimizer_eps, weight_decay=cfg.optimizer_weight_decay,
+    )
+
+
+def _build_scheduler(policy, optimizer, num_steps, cfg):
+    if hasattr(policy, "get_scheduler"):
+        return policy.get_scheduler(optimizer, num_steps)
+    from diffusers.optimization import get_scheduler
+    return get_scheduler(
+        cfg.scheduler_name, optimizer,
+        num_warmup_steps=cfg.scheduler_warmup_steps, num_training_steps=num_steps,
+    )
+
+
+def _build_ema(policy, cfg):
+    if hasattr(policy, "get_ema"):
+        return policy.get_ema()
+    if not cfg.get("use_ema", True):
+        return None
+    from diffusers.training_utils import EMAModel
+    return EMAModel(parameters=policy.parameters(), power=cfg.ema_power)
+
+
 class PolicyTrainer:
     def __init__(
         self,
@@ -46,8 +78,14 @@ class PolicyTrainer:
         train_dataloader=None,
         val_dataloader=None,
         eval_env=None,
+        preprocessor=None,
+        postprocessor=None,
     ):
         self.config = config
+        # LeRobot 은 정규화를 정책 밖(프로세서 파이프라인)에서 한다. 정규화가 정책 안에
+        # 있는 정책들에는 항등 함수가 들어와 같은 루프가 둘 다 다룬다.
+        self.preprocessor = preprocessor if preprocessor is not None else (lambda b: b)
+        self.postprocessor = postprocessor if postprocessor is not None else (lambda a: a)
         self.network = network.to(device)
         self.device = device
         self.step_counter = 0
@@ -57,9 +95,9 @@ class PolicyTrainer:
 
         num_total_steps = self.config.train.steps
 
-        self.optimizer = network.get_optimizer()
-        self.lr_scheduler = network.get_scheduler(self.optimizer, num_total_steps)
-        self.ema = network.get_ema()
+        self.optimizer = _build_optimizer(network, config)
+        self.lr_scheduler = _build_scheduler(network, self.optimizer, num_total_steps, config)
+        self.ema = _build_ema(network, config)
 
         # AMP (Automatic Mixed Precision)
         self.use_amp = config.train.get("use_amp", True)
@@ -106,6 +144,7 @@ class PolicyTrainer:
         self.network.train()
         self.optimizer.zero_grad()
 
+        batch = self.preprocessor(batch)
         with torch.amp.autocast("cuda", dtype=self.amp_dtype, enabled=self.use_amp):
             loss, output_dict = self.network.forward(batch)
 
@@ -153,6 +192,12 @@ class PolicyTrainer:
                         if isinstance(batch[key], torch.Tensor):
                             batch[key] = batch[key].to(self.device, non_blocking=True)
 
+                    if not hasattr(self.network, "validate"):
+                        raise NotImplementedError(
+                            "오프라인 검증은 network.validate() 를 쓰는데 이 정책엔 없다. "
+                            "val.num_episodes=0 으로 두고 rollout 성공률로 판단한다."
+                        )
+                    batch = self.preprocessor(batch)
                     output_dict = self.network.validate(batch)
 
                     batch_size = next(iter(batch.values())).shape[0]
@@ -191,7 +236,8 @@ class PolicyTrainer:
         image_keys = list(cfg.task.image_keys)
         eval_info = eval_policy(
             self.eval_env,
-            make_predict_fn(model, cfg, self.device),
+            make_predict_fn(model, cfg, self.device,
+                            preprocessor=self.preprocessor, postprocessor=self.postprocessor),
             cfg.val.eval_n_episodes,
             obs_horizon=cfg.policy.obs_horizon,
             action_horizon=cfg.policy.action_horizon,
@@ -395,9 +441,10 @@ def train(cfg: DictConfig):
     derive_task_meta(cfg.task, dataset_meta)
     log_dataset_image_resolution(cfg, dataset_meta)
 
-    # Create policy
-    policy_cls = get_policy_class(cfg.policy.name)
-    policy = policy_cls(cfg, stats)
+    # Create policy. make_policy also returns the normalization processors:
+    # LeRobot keeps normalization outside the module, ours keep it inside, and
+    # the trainer speaks one contract either way.
+    policy, preprocessor, postprocessor = make_policy(cfg, dataset_meta, stats)
     num_params = sum(p.numel() for p in policy.parameters())
     num_trainable_params = sum(p.numel() for p in policy.parameters() if p.requires_grad)
     logger.info(f"Number of parameters: {num_params/1e6:.2f}M | Trainable params: {num_trainable_params/1e6:.2f}M")
@@ -435,7 +482,9 @@ def train(cfg: DictConfig):
         device=cfg.device,
         train_dataloader=train_dataloader,
         val_dataloader=val_dataloader,
-        eval_env=eval_env
+        eval_env=eval_env,
+        preprocessor=preprocessor,
+        postprocessor=postprocessor,
     )
 
     # Resume from checkpoint if specified

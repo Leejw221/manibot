@@ -16,7 +16,7 @@ import numpy as np
 import torch
 from omegaconf import DictConfig, OmegaConf
 
-from manibot.policies.factory import get_policy_class
+from manibot.policies.factory import make_policy
 from manibot.rollout import make_predict_fn
 from manibot.utils.checkpoints import get_best_checkpoint, get_latest_checkpoint, load_model_weights
 from manibot.utils.dataset_utils import create_dataset_stats
@@ -42,7 +42,8 @@ def evaluate(cfg: DictConfig):
     dataset_meta, stats = create_dataset_stats(cfg)
     derive_task_meta(cfg.task, dataset_meta)
 
-    policy = get_policy_class(cfg.policy.name)(cfg, stats).to(cfg.device)
+    policy, preprocessor, postprocessor = make_policy(cfg, dataset_meta, stats)
+    policy = policy.to(cfg.device)
 
     checkpoint = Path(cfg.checkpoint_path) if cfg.checkpoint_path else (
         get_best_checkpoint(cfg.checkpoint_dir) or get_latest_checkpoint(cfg.checkpoint_dir)
@@ -58,7 +59,8 @@ def evaluate(cfg: DictConfig):
     try:
         info = eval_policy(
             env,
-            make_predict_fn(policy, cfg, cfg.device),
+            make_predict_fn(policy, cfg, cfg.device,
+                            preprocessor=preprocessor, postprocessor=postprocessor),
             cfg.val.eval_n_episodes,
             obs_horizon=cfg.policy.obs_horizon,
             action_horizon=cfg.policy.action_horizon,

@@ -26,15 +26,22 @@ import time
 import torch
 
 
-def make_predict_fn(policy, cfg, device):
-    """manibot 정책(BasePolicy)을 PolicyServer 가 받는 predict_fn 으로 감싼다.
+def make_predict_fn(policy, cfg, device, preprocessor=None, postprocessor=None):
+    """Wrap a policy as the predict_fn PolicyServer takes.
 
-    obs_history 는 raw obs dict 의 리스트(길이 obs_horizon)다. 텐서로 쌓고 device 로
-    옮기고 정규화하는 일은 전부 여기서 한다 — ClientManager 는 버퍼링만 하고 정책을
-    모른다.
+    obs_history is a list of raw observation dicts (length obs_horizon). Stacking,
+    moving to the device and normalizing all happen here — ClientManager only
+    buffers, and knows no policy.
+
+    Two policy families are supported. LeRobot policies normalize outside the
+    module, through the processor pipeline built alongside them, and their
+    generate_actions already slices to n_action_steps starting at the current
+    observation. Our older policies normalize inside and return the full
+    prediction horizon — the caller's anchor_offset accounts for the difference.
     """
     input_keys = list(cfg.task.image_keys) + [cfg.task.state_key]
     action_key = cfg.task.action_key
+    lerobot_style = hasattr(policy, "predict_action_chunk")
 
     def predict_fn(obs_history):
         batch = {
@@ -44,9 +51,16 @@ def make_predict_fn(policy, cfg, device):
             for k in input_keys
         }
         with torch.inference_mode():
-            batch = policy.normalize_inputs(batch)
-            actions = policy.generate_actions(batch)
-            actions = policy.unnormalize_outputs({action_key: actions})[action_key]
+            if lerobot_style:
+                if preprocessor is not None:
+                    batch = preprocessor(batch)
+                actions = policy.predict_action_chunk(batch)
+                if postprocessor is not None:
+                    actions = postprocessor(actions)
+            else:
+                batch = policy.normalize_inputs(batch)
+                actions = policy.generate_actions(batch)
+                actions = policy.unnormalize_outputs({action_key: actions})[action_key]
         return actions.squeeze(0).cpu().numpy()
 
     return predict_fn
