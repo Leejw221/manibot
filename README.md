@@ -41,13 +41,10 @@ pip install -e '.[sim]'       # 시뮬레이션
 pip install -e '.[train]'     # 학습
 ```
 
-## 출처와 라이선스
+## 만든 방식
 
-이 저장소는 다음 코드를 이식해 구성한다.
+[LeRobot](https://github.com/huggingface/lerobot) 의 구조와 정책 구현을 따르고, 기존 저장소
+(`manipulation_pipeline` · `manipulation_simulator`)의 코드를 옮겨 구성했다. 정리 작업은
+Claude Code 로 진행했다.
 
-- **VITA / FLARE** (`manipulation_pipeline`) — Copyright © 2024 The Regents of the
-  University of California, Davis campus. 비영리 교육·연구 기관의 비상업적 사용만
-  허용된다. 원 라이선스 전문은 이식과 함께 `LICENSE-VITA` 로 포함한다.
-- **manipulation_simulator** (`mani_sim`) — 개인 저장소.
-
-이식이 끝나기 전까지 이 저장소는 공개하지 않는다.
+라이선스는 `LICENSE-VITA` 를 따른다.
