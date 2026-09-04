@@ -25,6 +25,7 @@ task:
     env_name: TwoArmTransport
     robots: [Panda, Panda]
     image_size: 84
+    max_steps: 700   # 에피소드 최대 스텝 (rollout 평가)
     gripper_types: null
     state_from:
       - robot0_eef_pos

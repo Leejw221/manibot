@@ -35,6 +35,7 @@ task:
     env_name: NutAssemblySquare
     robots: Panda
     image_size: 84
+    max_steps: 400   # 에피소드 최대 스텝 (rollout 평가)
     gripper_types: null
     env_kwargs: null
     # 이 순서가 곧 observation.state 의 성분 순서다 — 변환과 평가가 같은 순서를 써야 한다.

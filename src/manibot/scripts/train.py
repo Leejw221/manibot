@@ -28,10 +28,11 @@ from manibot.utils.dataset_utils import (
     cycle,
     log_dataset_image_resolution,
 )
+from manibot.rollout import make_predict_fn
 from manibot.utils.eval import eval_policy
 from manibot.utils.logger import TrainLogger, setup_logging
 from manibot.utils.logging_utils import AverageMeter, MetricsTracker
-from manibot.utils.task_utils import derive_task_meta
+from manibot.utils.task_utils import derive_task_meta, is_sim_task, make_eval_env
 
 logger = logging.getLogger(__name__)
 
@@ -186,15 +187,20 @@ class PolicyTrainer:
             self.ema.copy_to(model.parameters())
 
         model.eval()
-        with torch.no_grad():
-            eval_info = eval_policy(
-                self.eval_env,
-                model,
-                self.config.val.eval_n_episodes,
-                videos_dir=Path(self.config.val_dir) / f"videos_step_{self.step_counter:010d}",
-                max_episodes_rendered=self.config.val.num_viz_videos,
-                start_seed=self.config.seed,
-            )
+        cfg = self.config
+        image_keys = list(cfg.task.image_keys)
+        eval_info = eval_policy(
+            self.eval_env,
+            make_predict_fn(model, cfg, self.device),
+            cfg.val.eval_n_episodes,
+            obs_horizon=cfg.policy.obs_horizon,
+            action_horizon=cfg.policy.action_horizon,
+            max_steps=cfg.task.sim.max_steps,
+            fps=cfg.task.fps,
+            videos_dir=Path(cfg.val_dir) / f"videos_step_{self.step_counter:010d}",
+            max_episodes_rendered=cfg.val.num_viz_videos,
+            video_key=image_keys[0] if image_keys else None,
+        )
 
         if self.config.use_ema and self.ema is not None:
             self.ema.restore(model.parameters())
@@ -412,16 +418,16 @@ def train(cfg: DictConfig):
         val_dataloader = None
         logger.info(f"Train: {train_dataset.num_frames} frames | {train_dataset.num_episodes} episodes | {len(train_dataloader)} batches")
 
-    # Online evaluation (rollout success rate) is not wired yet: utils/eval.py
-    # drives a vectorised gym env, while make_eval_env returns a single robosuite
-    # env with a different API. Bridging them is the next step; until then
-    # val.val_online_freq must stay 0.
+    # Online evaluation: rollout success rate. This is what training is judged
+    # by — offline loss is not it.
     eval_env = None
     if cfg.val.val_online_freq > 0:
-        raise NotImplementedError(
-            "온라인 평가(rollout)는 아직 배선되지 않았다. val.val_online_freq=0 으로 두거나 "
-            "utils/eval.py 와 make_eval_env 의 env API 를 먼저 맞춰야 한다."
-        )
+        if not is_sim_task(cfg.task):
+            raise ValueError(
+                f"task '{cfg.task.name}' 은 실물이라 학습 중 rollout 평가를 할 수 없다. "
+                "val.val_online_freq=0 으로 두고 별도로 평가한다."
+            )
+        eval_env = make_eval_env(cfg.task)
 
     runner = PolicyTrainer(
         cfg,

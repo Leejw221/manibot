@@ -129,6 +129,12 @@ class _LeRobotObsEnv:
         obs, reward, done, info = self._env.step(action)
         return self._convert(obs), reward, done, info
 
+    def close(self):
+        # EnvRobosuite 자체엔 close 가 없고 안쪽 robosuite env 에만 있다.
+        inner = getattr(self._env, "env", None)
+        if inner is not None and hasattr(inner, "close"):
+            inner.close()
+
     def __getattr__(self, name):
         # is_success · action_dimension · env 등 나머지는 그대로 위임한다.
         return getattr(object.__getattribute__(self, "_env"), name)
