@@ -42,7 +42,14 @@ TORSO_W = 0.12             # 몸통 폭(m). **어깨 간격보다 좁아야** �
 # 메시의 좌우축이 x 라서 시뮬의 좌우축(y)에 맞추려면 z축으로 +90° 돌린다.
 BODY_MESH  = "body.stl"
 BODY_SCALE = 0.001                      # STL 단위가 mm
-BODY_CTR   = (-0.059, 0.195, 0.109)     # 두 장착면의 중점 (메시 좌표)
+# 두 장착면 **볼트 사각의 중점** (메시 좌표, m) [STL 실측 2026-09-05].
+# 예전엔 눈대중으로 z=0.109 를 썼는데 실측 볼트 중심은 0.12887 이라, 팔이 볼트 구멍보다
+# 19.9mm 아래에 붙어 있었다. 여기에 base_link 자체의 원점->볼트중심 오프셋까지 더하면
+# 총 24.67mm 어긋나 있었다 (사용자가 렌더에서 "구멍 위치가 안 맞는다"고 잡아냈다).
+BODY_BOLT_CTR = (-0.05926, 0.19505, 0.12887)
+# base_link 원점에서 플랜지 볼트 사각 중심까지 (base_link 국소 좌표, m).
+# 장착 회전이 base x -> 링크 z 이므로 이 x 성분이 곧 높이 보정이 된다.
+BASE_BOLT_OFF = (-0.0048, -0.00006, 0.0)
 BODY_FLOOR = -0.456                     # 바닥 플랜지 밑면 (메시 좌표)
 # 충돌은 메시를 쓰지 않는다 — 기둥에 트러스 구멍이 있어 볼록껍질로 근사하면 구멍이
 # 메워져 실제보다 뚱뚱해진다. 팔이 몸통에 닿는지만 보면 되므로 박스 두 개가 더 정확하다.
@@ -180,10 +187,11 @@ def build(dual=True, shoulder_z=SHOULDER_Z, span=SHOULDER_SPAN, tilt=MOUNT_TILT,
     ET.SubElement(ine, "inertia", dict(ixx="1", ixy="0", ixz="0", iyy="1", iyz="0", izz="1"))
     body_mesh = os.path.join(NERO, "meshes", BODY_MESH)
     if mount == "side" and os.path.exists(body_mesh):
-        # 메시 좌표 p 를 링크 좌표로: Rz(90°)·p + t. 두 장착면의 중점이 (0,0,base_z) 에 오게 t 를 잡는다.
+        # 메시 좌표 p 를 링크 좌표로: Rz(90°)·p + t.
         rot = lambda p: (-p[1], p[0], p[2])
-        rc = rot(BODY_CTR)
-        t = (-rc[0], -rc[1], base_z - rc[2])
+        # 팔의 볼트 중심이 몸체의 볼트 중심에 정확히 오도록 몸체 메시를 놓는다.
+        rc = rot(BODY_BOLT_CTR)
+        t = (-rc[0], -rc[1], base_z + BASE_BOLT_OFF[0] - rc[2])
         vis = ET.SubElement(torso, "visual")
         ET.SubElement(vis, "origin", {"xyz": f"{t[0]:.4f} {t[1]:.4f} {t[2]:.4f}",
                                       "rpy": f"0 0 {_m.pi/2:.6f}"})
