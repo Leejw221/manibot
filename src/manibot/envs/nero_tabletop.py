@@ -17,7 +17,7 @@ from robosuite.utils.mjcf_utils import CustomMaterial
 from robosuite.utils.observables import Observable, sensor
 from robosuite.utils.placement_samplers import UniformRandomSampler
 
-from manibot.envs.microwave import MicrowaveTask
+from manibot.envs.microwave import MicrowaveTask, _look_at
 
 TABLE_HEIGHT = 0.64        # [사용자 2026-09-05] 실물이 쓰는 작업대 높이 (mm 640)
 TABLE_SIZE = (0.8, 1.2, 0.05)
@@ -47,6 +47,11 @@ class NeroTabletop(ManipulationEnv):
         arena = TableArena(table_full_size=self.table_full_size,
                            table_offset=self.table_offset)
         arena.set_origin([0, 0, 0])
+        # TableArena 기본 카메라는 Panda·작업대 0.8 기준이라 NERO(어깨 1.08·작업대 0.64)
+        # 에서는 로봇이 화면 구석에 작게 잡힌다. 이 배치에 맞춰 다시 잡는다.
+        for name, eye, tgt in (("agentview", (0.75, -0.85, 1.35), (-0.25, -0.05, 0.82)),
+                               ("frontview", (1.15, 0.0, 1.30), (-0.30, 0.0, 0.85))):
+            arena.set_camera(camera_name=name, pos=list(eye), quat=list(_look_at(eye, tgt)))
 
         tex = CustomMaterial(texture="WoodRed", tex_name="redwood", mat_name="redwood_mat",
                              tex_attrib={"type": "cube"},
