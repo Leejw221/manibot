@@ -116,7 +116,11 @@ class Nero(ManipulatorModel):
         왼팔 미러는 부호조합 128 가지를 전수 탐색해 확정했다(y 대칭 오차 0.00 cm) —
         side mount 라 좌우 roll 이 반대여서 전부 뒤집으면 맞지 않는다.
         """
-        right = np.radians([9.5, -62.1, 125.9, 98.3, -92.1, -14.7, 62.1])
+        # ⚠️ joint1 이 -80.5° 인 것은 **장착 보정** 때문이다. 조립 STL 실측으로 팔 장착이
+        # 법선 둘레로 90° 틀어져 있던 것을 고쳤는데(build_assets.MOUNT_YAW), 그 축이 곧
+        # joint1 축이라 같은 물리 자세를 유지하려면 joint1 을 그만큼 되돌려야 한다
+        # (보정 전 9.5° · 검증: 옛 모델과 손 자세가 0.00mm/0.00° 로 일치 [2026-09-05]).
+        right = np.radians([-80.5, -62.1, 125.9, 98.3, -92.1, -14.7, 62.1])
         return np.concatenate([right, right * MIRROR])
 
     @property

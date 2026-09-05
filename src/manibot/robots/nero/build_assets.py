@@ -20,6 +20,7 @@
 import argparse
 import os
 import xml.etree.ElementTree as ET
+import math
 
 # 메시·xacro 는 워크스페이스 밖 형제 디렉토리에 있다. 머신마다 부모 폴더 이름이 달라서
 # (pobi = jungwook_ws · 개인 PC = workspace) 절대경로를 박으면 한쪽에서만 돈다.
@@ -47,6 +48,15 @@ BODY_FLOOR = -0.456                     # 바닥 플랜지 밑면 (메시 좌표
 # 메워져 실제보다 뚱뚱해진다. 팔이 몸통에 닿는지만 보면 되므로 박스 두 개가 더 정확하다.
 BODY_COLL  = (((-0.119, 0.141, -0.440), (0.000, 0.216, -0.020)),   # 세로 기둥
               ((-0.161, 0.131, -0.020), (0.042, 0.258,  0.195)))   # 상단 헤드
+
+# 장착면 법선(= base_link 의 +z, 곧 joint1 축) 둘레의 회전. 볼트 구멍이 70x70 정사각이라
+# CAD 부품만으로는 90° 배수 네 가지가 다 맞아, 처음엔 확인 없이 0 으로 뒀었다.
+# 사용자가 준 **조립 STL**(WeGo_Nero_Dual Arm.stl, 54M 삼각형)에 base_link 를 끼워
+# 맞춰 확정했다 — 1도씩 360° 훑어 최근접거리 중앙값 1.29mm(정답) vs 9.5~12mm(그 외)
+# 로 갈렸고, 양팔 모두 -90° 였다 [ICP 실측 2026-09-05].
+# ⚠️ 이 회전은 joint1 축과 같은 축이라 도달 범위의 **모양은 안 바뀐다**. 바뀌는 것은
+#    base_link 부품이 놓인 방향과, joint1 한계 ±155° 가 만드는 사각지대의 위치다.
+MOUNT_YAW = -math.pi / 2
 
 MOUNT_TILT = 0.0           # **0도.** 베이스는 윗면 철판에 평평하게(수직으로) 붙는다 —
                            # 기울여 달면 구조가 안 맞는다 [사용자 지적 2026-09-01]
@@ -207,15 +217,17 @@ def build(dual=True, shoulder_z=SHOULDER_Z, span=SHOULDER_SPAN, tilt=MOUNT_TILT,
     import math
     if mount == "side":
         # roll ±90° : base 의 +z 를 각각 -y / +y (바깥)로 돌린다
-        sides = ([("right", -half_y, +math.pi / 2 - tilt),
-                  ("left", +half_y, -math.pi / 2 + tilt)] if dual
-                 else [("right", 0.0, math.pi / 2)])
+        # pitch = MOUNT_YAW : 그 축 둘레로 실측만큼 돌린다 (위 상수 주석 참고)
+        sides = ([("right", -half_y, +math.pi / 2 - tilt, MOUNT_YAW),
+                  ("left", +half_y, -math.pi / 2 + tilt, MOUNT_YAW)] if dual
+                 else [("right", 0.0, math.pi / 2, MOUNT_YAW)])
     else:
         base_roll = 0.0 if mount == "upright" else math.pi
         s = 1.0 if mount == "upright" else -1.0
-        sides = ([("right", -half_y, base_roll - s * tilt), ("left", +half_y, base_roll + s * tilt)]
-                 if dual else [("right", 0.0, base_roll)])
-    for name, y, roll in sides:
+        sides = ([("right", -half_y, base_roll - s * tilt, 0.0),
+                  ("left", +half_y, base_roll + s * tilt, 0.0)]
+                 if dual else [("right", 0.0, base_roll, 0.0)])
+    for name, y, roll, pitch in sides:
         for el in arm:
             e = ET.fromstring(ET.tostring(el))
             e.set("name", f"{name}_{e.get('name')}")
@@ -226,7 +238,7 @@ def build(dual=True, shoulder_z=SHOULDER_Z, span=SHOULDER_SPAN, tilt=MOUNT_TILT,
         j = ET.SubElement(robot, "joint",
                           {"name": f"{name}_mount", "type": "fixed"})
         ET.SubElement(j, "origin", {"xyz": f"0 {y:.4f} {base_z:.4f}",
-                                    "rpy": f"{roll:.4f} 0 0"})
+                                    "rpy": f"{roll:.4f} {pitch:.4f} 0"})
         ET.SubElement(j, "parent", {"link": "torso"})
         ET.SubElement(j, "child", {"link": f"{name}_base_link"})
     return robot
@@ -271,9 +283,23 @@ def main():
     names = [mujoco.mj_id2name(m, mujoco.mjtObj.mjOBJ_JOINT, i) for i in range(m.njnt)]
     print(f"   joints({len(names)}) {names}")
 
+    # robosuite 자산까지 한 번에 만든다 — 예전엔 이 두 함수를 손으로 불러야 해서
+    # URDF 를 고쳐도 robot.xml 이 옛것으로 남는 함정이 있었다.
+    assets = os.path.join(os.path.dirname(os.path.abspath(__file__)), "assets")
+    os.makedirs(assets, exist_ok=True)
+    raw = os.path.join(os.path.dirname(args.out), "_nero_raw.mjcf")
+    mujoco.mj_saveLastXML(raw, m)
+    rp = os.path.join(assets, "robot.xml")
+    ET.indent(r := robot_mjcf(raw), "  ")
+    open(rp, "w").write(ET.tostring(r, encoding="unicode"))
+    gp = os.path.join(assets, "gripper.xml")
+    ET.indent(g := gripper_mjcf(), "  ")
+    open(gp, "w").write(ET.tostring(g, encoding="unicode"))
+    os.remove(raw)
+    for path in (rp, gp):
+        mm = mujoco.MjModel.from_xml_path(path)
+        print(f"✅ {os.path.basename(path)}  body {mm.nbody} · joint {mm.njnt} · actuator {mm.nu}")
 
-if __name__ == "__main__":
-    main()
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -428,3 +454,5 @@ def gripper_mjcf(meshdir="meshes"):
                                   "friction": "1 0.05 0.001", "condim": "4",
                                   "solimp": "0.95 0.99 0.001", "solref": "0.005 1"})
     return r
+if __name__ == "__main__":
+    main()
