@@ -13,17 +13,25 @@ import numpy as np
 from robosuite.utils.transform_utils import mat2quat, quat2axisangle
 
 
-def frame(approach, close):
-    """접근축(eef z)·개폐축(eef x)으로 목표 회전행렬을 만든다.
+def frame(approach, close, close_axis="x"):
+    """접근축(eef z)·개폐축으로 목표 회전행렬을 만든다.
 
-    Panda 그리퍼는 손가락이 eef x 축으로 벌어지고 eef +z 방향으로 뻗는다 [실측 2026-09-05].
+    ⚠️ **개폐축이 로봇마다 다르다** [실측 2026-09-05]:
+        Panda : 손가락이 eef **x** 로 ±0.021 벌어지고 +z 로 뻗는다  -> close_axis="x"
+        NERO  : 손가락이 eef **y** 로 ±0.025 벌어지고 +z 로 뻗는다  -> close_axis="y"
+    이걸 틀리면 손목을 90° 틀어 명령하게 되고, 도달 측정이 통째로 실패로 나온다
+    (NERO 첫 측정이 실제로 그랬다).
     """
     z = np.asarray(approach, float)
     z = z / np.linalg.norm(z)
-    x = np.asarray(close, float)
-    x = x - z * (x @ z)
-    x = x / np.linalg.norm(x)
-    return np.stack([x, np.cross(z, x), z], axis=1)
+    c = np.asarray(close, float)
+    c = c - z * (c @ z)
+    c = c / np.linalg.norm(c)
+    if close_axis == "x":
+        return np.stack([c, np.cross(z, c), z], axis=1)
+    if close_axis == "y":
+        return np.stack([np.cross(c, z), c, z], axis=1)
+    raise ValueError(f"close_axis 는 'x' 또는 'y' — 받은 값 {close_axis!r}")
 
 
 def rot_z(t):
@@ -44,11 +52,15 @@ class ArmIK:
         self._mujoco = mujoco
         r = env.robots[0]
         arm = arm or r.arms[0]
+        self.arm = arm
         self.m, self.d = env.sim.model._model, env.sim.data._data
-        self.jidx = np.array(r._ref_joint_pos_indexes)
-        self.dofs = np.array([self.m.jnt_dofadr[self.m.joint(n).id] for n in r.robot_model.joints])
+        # 양팔 로봇에서는 **그 팔의 관절만** 푼다 — 전 관절을 넘기면 반대 팔이 같이 움직인다.
+        joints = [n for n in r.robot_model.joints if f"_{arm}_joint" in n] or r.robot_model.joints
+        self.joints = joints
+        self.jidx = np.array([self.m.jnt_qposadr[self.m.joint(n).id] for n in joints])
+        self.dofs = np.array([self.m.jnt_dofadr[self.m.joint(n).id] for n in joints])
         self.sid = r.eef_site_id[arm]
-        self.rng = np.array([self.m.jnt_range[self.m.joint(n).id] for n in r.robot_model.joints])
+        self.rng = np.array([self.m.jnt_range[self.m.joint(n).id] for n in joints])
         self.mid = self.rng.mean(1)
         self.n = len(self.jidx)
 

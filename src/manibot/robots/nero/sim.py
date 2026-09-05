@@ -18,6 +18,8 @@ from robosuite.models.robots.manipulators.manipulator_model import ManipulatorMo
 from robosuite.controllers import load_composite_controller_config
 from robosuite.robots import register_robot_class
 
+from manibot.envs.ik import frame as _frame
+
 ASSETS = os.path.join(os.path.dirname(os.path.abspath(__file__)), "assets")
 
 # 실측값 [메시·MJCF 실측 2026-09-04~05]
@@ -166,6 +168,14 @@ def controller_config(controller: str = "BASIC") -> dict:
 
 
 # 양팔 action 벡터에서 각 팔의 위치 delta 가 놓이는 자리 [실측 2026-09-05]
+def frame(approach, close):
+    """NERO 용 목표 자세 — 개폐축이 eef **y** 다 (Panda 는 x).
+
+    실측: 손가락 body 가 eef 좌표계에서 y=±0.025 · z=+0.038 에 있다 [2026-09-05].
+    """
+    return _frame(approach, close, close_axis="y")
+
+
 ARM_POS_SLICE = {"right": slice(0, 3), "left": slice(6, 9)}
 ARM_ORI_SLICE = {"right": slice(3, 6), "left": slice(9, 12)}
 GRIPPER_INDEX = {"right": 12, "left": 13}
