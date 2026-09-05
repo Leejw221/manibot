@@ -1,0 +1,12 @@
+defaults:
+  - task: franka_microwave
+  - _self_
+
+n_demos: 100
+# null 이면 task.hdf5_path 에 쓴다.
+out_path: null
+seed: 0
+# 한 에피소드 최대 스텝. 스크립트 시연은 평균 1390 스텝이다.
+max_steps: 2500
+# 실패한 에피소드는 버린다 — 시연 데이터는 성공만 담는다.
+keep_failures: false

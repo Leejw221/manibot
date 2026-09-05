@@ -1,0 +1,48 @@
+# @package _global_
+
+# robosuite 가 84x84 로 렌더하므로 따로 줄이지 않는다 (robomimic 관례와 동일).
+resize_shape: null
+crop_shape: [76, 76]
+
+task:
+  name: franka_microwave
+
+  # 학습·평가가 보는 유일한 이름 (실물·시뮬 공통 규약)
+  image_keys:
+    - observation.images.agentview
+    - observation.images.wrist
+  state_key: observation.state
+  action_key: action
+  state_dim: 9      # 3 + 4 + 2 (eef_pos · eef_quat · gripper_qpos)
+  fps: 20
+  action_dim: 7
+
+  hdf5_path: ${oc.env:MANIBOT_DATASETS_DIR,data}/franka_microwave/demos.hdf5
+  dataset_repo_id: null
+  # hdf5 와 zarr 는 같은 폴더에 두지 않는다 — 변환이 hdf5 옆에 zarr 를 풀어 놓으면
+  # 다음 변환 때 무엇이 원본인지 헷갈린다.
+  dataset_root: ${oc.env:MANIBOT_DATASETS_DIR,data}/franka_microwave/zarr
+
+  override_stats:
+    observation.images.agentview:
+      mean: [[[0.485]], [[0.456]], [[0.406]]]
+      std: [[[0.229]], [[0.224]], [[0.225]]]
+    observation.images.wrist:
+      mean: [[[0.485]], [[0.456]], [[0.406]]]
+      std: [[[0.229]], [[0.224]], [[0.225]]]
+
+  sim:
+    backend: robosuite
+    # manibot.envs.microwave 가 import 부수효과로 robosuite 레지스트리에 등록한다.
+    env_name: MicrowaveTask
+    robots: Panda
+    image_size: 84
+    # 스크립트 시연이 평균 1390 스텝이라 rollout 은 넉넉히 준다.
+    max_steps: 2000
+    gripper_types: null
+    env_kwargs: null
+    # 이 순서가 곧 observation.state 의 성분 순서다 — 수집·변환·평가가 같아야 한다.
+    state_from: [robot0_eef_pos, robot0_eef_quat, robot0_gripper_qpos]
+    cameras:
+      agentview: observation.images.agentview
+      robot0_eye_in_hand: observation.images.wrist

@@ -44,3 +44,27 @@ pip install -e '.[train]'     # 학습
 ## 만든 방식
 
 [LeRobot](https://github.com/huggingface/lerobot) 의 구조와 정책 구현을 참고했다. 정리 작업은 Claude Code로 진행했다.
+
+## 시뮬레이션 task
+
+| task | 로봇 | 내용 |
+|---|---|---|
+| `MicrowaveTask` | Panda / NERO | 전자레인지 문 열기 → 물건 넣기 → 문 닫기 → start 버튼 |
+| `NeroTabletop` | NERO | 작업대 위 큐브 집어 들기 (도달·파지 검증용) |
+| `DoorCabinet` | Panda | 문 열기 → 닫기 → 복귀 |
+
+`MicrowaveTask` 는 스크립트 시연 정책(`envs/microwave_expert.py`)이 딸려 있다.
+
+```bash
+python -m manibot.scripts.collect_scripted n_demos=100   # 시연 수집 (hdf5)
+python -m manibot.scripts.convert_hdf5_to_zarr task=franka_microwave
+python -m manibot.scripts.train task=franka_microwave policy=diffusion
+python -m manibot.scripts.eval  task=franka_microwave policy=diffusion checkpoint_path=...
+```
+
+## 자산 출처
+
+- 전자레인지 `envs/assets/microwave/` — [RoboCasa](https://github.com/robocasa/robocasa)
+  의 `Microwave052` (MIT License, © the RoboCasa Team).
+- NERO `robots/nero/assets/` — WeGo Robotics 제공 원본 URDF·STL 에서
+  `robots/nero/build_assets.py` 가 생성한다.

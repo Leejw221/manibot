@@ -10,7 +10,7 @@ from robomimic.envs.env_robosuite import EnvRobosuite
 # 커스텀 robosuite env 클래스 등록 부수효과 (robosuite는 MujocoEnv 서브클래스가 import되는
 # 순간 메타클래스가 자동으로 전역 레지스트리에 등록 - suite.make(env_name=...)가 찾으려면
 # 이 import가 먼저 일어나야 한다).
-from manibot.envs import door_cabinet  # noqa: E402,F401
+from manibot.envs import door_cabinet, microwave  # noqa: E402,F401
 
 
 def _ensure_obs_utils_initialized(obs_keys, rgb_keys=()):

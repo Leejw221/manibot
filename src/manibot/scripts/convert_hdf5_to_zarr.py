@@ -83,6 +83,9 @@ def convert_hdf5_to_zarr(hdf5_path, zarr_path, state_from, cameras, fps, task_na
                 image_shapes[key] = list(arr.shape[1:])
             if "action_mode" in demo:
                 data["action_mode"] = demo["action_mode"][()].astype(np.int64)
+            # 스크립트 수집이 남기는 구간 라벨. stage 조건화 실험의 정답 분절로 쓴다.
+            if "stage" in demo:
+                data["stage"] = demo["stage"][()].astype(np.int64)
             for k in acc:
                 acc[k].append(data[k])
             buffer.add_episode(data)
