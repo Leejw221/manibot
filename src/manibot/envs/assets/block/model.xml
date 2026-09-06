@@ -1,0 +1,26 @@
+<mujoco model="block">
+  <!--
+    옮길 물체 — 40 x 40 x 60 mm 의 평범한 블록.
+
+    한때 "이 그리퍼는 마찰 파지가 안 된다"고 보고 목·머리를 단 아령 모양으로 바꿨었다.
+    실제 원인은 형상이 아니라 **시뮬레이터 워밍업**이었다 (envs/drawer.py 의 주석 참조).
+    워밍업을 넣은 뒤 재보니 평범한 블록이 아령보다 오히려 잘 잡힌다:
+    아령 39.5 mm vs 블록 66.4 mm [실측 2026-09-06]. 시연 데이터로도 평범한 블록이 낫다.
+
+    높이 60 mm 인 이유: NERO 손가락은 파지점보다 38 mm 아래까지 뻗는다. 손끝이 서랍
+    바닥에 닿지 않으면서 패드가 블록 몸통을 물려면 그 정도 높이가 필요하다.
+  -->
+  <compiler angle="radian"/>
+  <asset>
+    <material name="block_mat" rgba="0.85 0.15 0.12 1" shininess="0.3" specular="0.4"/>
+  </asset>
+  <worldbody>
+    <body>
+      <body name="object">
+        <geom name="box" type="box" pos="0 0 0" size="0.020 0.020 0.030"
+              material="block_mat" group="0" friction="1 0.005 0.0001" condim="4"
+              solref="0.02 1" density="600"/>
+      </body>
+    </body>
+  </worldbody>
+</mujoco>

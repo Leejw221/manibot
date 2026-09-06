@@ -1,16 +1,27 @@
-<mujoco model="drawer">
+<mujoco model="drawer2">
   <!--
-    서랍장 — NERO 양팔 분업용으로 직접 만들었다.
+    ⚠️ 앞판은 local y -0.118 이다 (-0.135 에서 뒤로 17mm). 블록을 아래층에 넣으러
+    내려갈 때, 블록이 **닫힌 위층 앞판 위에 얹혀** 6cm 밖에 못 내려갔다 — 블록 x
+    -0.092 와 앞판 x -0.110~-0.090 이 정확히 겹쳤다 [실측 2026-09-06]. 지금은 22mm 여유.
 
-    **왜 직접 만드나**: robocasa 의 drawer.xml 은 손잡이도 앞판도 없는 뼈대(0.36x0.60x0.60)라
-    그대로 못 쓴다. 크기를 NERO 작업 영역(팔당 25x20cm, 팔이 몸 중앙을 못 넘음)에 맞춰야 한다.
+    2단 서랍장 — NERO 양팔 분업용. 치수는 **도달 지도 실측**으로 정했다 [2026-09-06].
 
-    **왜 서랍인가**: 여닫이 문은 손잡이가 호를 그리며 좌우로 크게 움직여 NERO 가 못 연다
-    (전자레인지 실측: x 0.345m · y 0.244m 이동). 서랍은 **직선 0.18m** 이고 좌우 이동이 0 이라
-    한 팔 영역 안에 들어온다. 게다가 손잡이가 가로 막대라 **왼팔은 왼쪽 끝, 오른팔은
-    서랍 안 오른쪽**으로 갈라 쓸 수 있다 — 양팔 분업이 성립하는 유일한 형태.
+    측정: 왼팔이 손잡이 자세(위에서·x로 물기)로 닿는 곳은 y=+0.16 에서 x -0.30~-0.14 ·
+    z 0.72~0.88. 오른팔이 블록 자세(위에서·y로 물기)로 닿는 곳은 y=-0.10 에서
+    **x -0.10~-0.02 (폭 8 cm)** · z 0.68~1.00. 두 구간이 겹치지 않으므로
+      손잡이 돌출 = 왼팔 구간 중심 - 오른팔 구간 중심 = 0.16 m
+    y 도 같이 훑어 **왼팔 y=+0.19 · 오른팔 y=-0.17** 이 가장 넓다는 것을 확인했다
+    (y=+0.16 / -0.10 보다 각각 2배 넓다). 서랍장을 y=+0.02 에 두고 손잡이를 반길이
+    0.22 로 늘려, 두 창을 **동시에** 만족시킨다 — 서랍장을 오른팔 쪽으로 옮기면서도
+    왼팔 파지점 y 는 +0.19 로 유지된다.
+    로 맞추고, 인출량은 **0.09 m** 로 잡아야 닫힘·열림 네 지점이 모두 구간 안에 든다.
+    (0.14 로 열면 손잡이가 왼팔 구간 밖으로 나가 팔이 목표에서 3~45 cm 벗어났다.)
 
-    정면은 -y 를 향한다 (robocasa 관례와 같게). 환경이 z축 -90° 로 돌려 로봇을 보게 한다.
+    바깥 0.50(x) x 0.23(y) x 0.26(z) · 손잡이 z = 0.84 / 0.70 (간격 0.14 는 아래층을
+    잡을 때 그리퍼 몸통이 위층 손잡이 밑을 29 mm 여유로 지나가게 하는 값).
+
+    ⚠️ geom 은 전부 group 0 이다. robosuite 는 group0=충돌·group1=시각 으로 갈라
+    렌더에서 group0 을 끄므로 `duplicate_collision_geoms=True` 여야 **보인다**.
   -->
   <compiler angle="radian"/>
   <asset>
@@ -25,36 +36,71 @@
   <worldbody>
     <body>
       <body name="object">
-        <!-- 몸통: 좌우 옆판 · 뒷판 · 윗판 · 바닥.  전체 0.50(x) x 0.30(y) x 0.22(z) -->
-        <geom class="cab" name="side_l" pos="-0.24  0.00  0.00" size="0.010 0.150 0.110"/>
-        <geom class="cab" name="side_r" pos=" 0.24  0.00  0.00" size="0.010 0.150 0.110"/>
-        <geom class="cab" name="back"   pos=" 0.00  0.140 0.00" size="0.250 0.010 0.110"/>
-        <geom class="cab" name="top"    pos=" 0.00  0.00  0.100" size="0.250 0.150 0.010"/>
-        <geom class="cab" name="floor"  pos=" 0.00  0.00 -0.100" size="0.250 0.150 0.010"/>
+        <geom class="cab" name="side_l" pos="-0.250  0.000  0.000" size="0.008 0.115 0.140"/>
+        <geom class="cab" name="side_r" pos=" 0.250  0.000  0.000" size="0.008 0.115 0.140"/>
+        <geom class="cab" name="back"   pos=" 0.000  0.107  0.000" size="0.258 0.008 0.140"/>
+        <geom class="cab" name="floor"  pos=" 0.000  0.000 -0.132" size="0.258 0.115 0.008"/>
+        <geom class="cab" name="shelf"  pos=" 0.000  0.000  0.000" size="0.258 0.115 0.008"/>
+        <geom class="cab" name="top"    pos=" 0.000  0.000  0.132" size="0.258 0.115 0.008"/>
 
-        <!-- 서랍: -y 로 0.18 m 나온다 -->
-        <body name="drawer">
-          <joint name="slidejoint" type="slide" axis="0 -1 0" limited="true" range="0 0.18"
-                 damping="6" frictionloss="1.5" armature="0.01"/>
-          <geom class="cab" name="dw_bottom" pos="0 0 -0.070" size="0.225 0.135 0.008"/>
-          <geom class="cab" name="dw_back"   pos="0 0.130 -0.020" size="0.225 0.008 0.045"/>
-          <geom class="cab" name="dw_left"   pos="-0.220 0 -0.020" size="0.008 0.135 0.045"/>
-          <geom class="cab" name="dw_right"  pos=" 0.220 0 -0.020" size="0.008 0.135 0.045"/>
-          <geom class="cab" name="dw_front" type="box" material="front_mat"
-                pos="0 -0.150 0.000" size="0.245 0.010 0.085" group="0"/>
-          <!-- 손잡이: 가로 막대. 왼쪽 끝은 왼팔이, 오른쪽 끝은 오른팔이 잡을 수 있다.
-               ⚠️ 앞판과의 틈이 중요하다 — NERO 손가락은 파지점에서 38mm 뻗으므로
-               틈이 그보다 작으면 손가락이 앞판에 막혀 못 문다 (12mm 로 뒀다가 실패했다).
-               띄움 65mm 로 두어 틈 54mm 를 확보한다 [실측 2026-09-06]. -->
-          <geom name="handle" type="box" material="handle_mat" group="0"
-                pos="0 -0.225 0.030" size="0.200 0.011 0.011"/>
-          <geom name="handle_post_l" type="box" material="handle_mat" group="0"
-                pos="-0.185 -0.193 0.030" size="0.010 0.032 0.011"/>
-          <geom name="handle_post_r" type="box" material="handle_mat" group="0"
-                pos=" 0.185 -0.193 0.030" size="0.010 0.032 0.011"/>
-          <geom class="region" name="reg_int" type="box" pos="0 0 -0.020" size="0.215 0.130 0.042"/>
+        <!-- 서랍 높이 92mm(z 0.024~0.116), 칸 0.008~0.124 -> 여유 16/8mm.
+             앞판이 윗판과 **2mm 겹치기만 해도** 서랍이 통째로 잼이 된다 (당겨도 0.0cm)
+             [실측 2026-09-06].
+             레일 마찰(frictionloss)은 0.3N 이다. 1.5N 으로 뒀더니 **수평 파지가 안 됐다** —
+             팔이 손잡이를 당기는 힘이 월드 x 로 1.39N 밖에 안 걸리는데(마찰 한계는 55N 로
+             여유가 10배 있었다) 서랍이 2N 을 요구해 딱 그만큼 모자랐다. 0.3N 이면 열린다.
+             옆벽은 ±0.230(안쪽면 0.222)까지 벌리고 몸통도 ±0.250 으로 같이 키웠다.
+             ±0.220 이면 블록을 잡으러 내려간 그리퍼의 손가락 **바깥면**(파지 중심에서
+             55mm)이 벽에 걸려 개구가 67mm 에서 멎었고, 몸통을 안 키우고 벽만 벌리면
+             이번엔 벽이 몸통 옆판과 겹쳐 서랍이 통째로 잼이 됐다.
+             ⚠️ 딱 맞추면 안 된다 — 서랍 바닥이 선반에 **거리 0** 으로 닿으면 그 접촉
+             마찰(합계 6N)이 서랍을 붙잡아 6N 을 줘도 0.01cm 밖에 안 나갔다 [실측]. -->
+        <body name="lower" pos="0 0 -0.070">
+          <joint name="lower_slide" type="slide" axis="0 -1 0" limited="true" range="0 0.15"
+                 damping="1.0" frictionloss="0.3" armature="0.02"/>
+          <geom class="cab" name="lo_bottom" pos="0  0.000 -0.038" size="0.228 0.088 0.008"/>
+          <geom class="cab" name="lo_back"   pos="0  0.080  0.000" size="0.228 0.008 0.030"/>
+          <geom class="cab" name="lo_left"   pos="-0.233 0.000 0.000" size="0.005 0.088 0.030"/>
+          <geom class="cab" name="lo_right"  pos=" 0.233 0.000 0.000" size="0.005 0.088 0.030"/>
+          <geom class="cab" name="lo_front"  pos="0 -0.118 0.000" size="0.253 0.010 0.046"
+                material="front_mat"/>
+<!-- 두 손잡이는 같은 깊이다. 둘 다 **앞에서 수평으로** 잡고, 놓을 때만 z 로
+               서로 반대 방향(위층은 아래로, 아래층은 위로)으로 벗어난다 — 사이가 140mm
+               떨어져 있어 서로 안 걸린다. 아래층을 위에서 무는 방식도 되지만, 그러려면
+               위층 막대를 x 로 피할 만큼(110mm) 내밀어야 하고 그러면 왼팔 최소 도달
+               반경(0.281m)에 걸린다 [실측 2026-09-06]. -->
+          <!-- ⚠️ 아래층 손잡이만 위층보다 **20mm 안쪽**이다. 같은 깊이면 **준비 자세에서
+               이미** 왼손 손가락 끝(파지점 앞뒤 38mm)이 이 막대와 2mm 겹쳐, 팔이 움직이기
+               시작하는 것만으로 아래층이 7.3cm 열렸다 [사용자 지적 2026-09-06].
+               서랍장 자체를 3cm 물리는 방법도 있지만 그러면 다른 도달이 다 나빠진다. -->
+          <geom name="lo_handle" type="box" material="handle_mat" group="0"
+                pos="0 -0.160 0.000" size="0.220 0.011 0.011"/>
+          <geom name="lo_post_l" type="box" material="handle_mat" group="0"
+                pos="-0.205 -0.139 0.000" size="0.010 0.010 0.011"/>
+          <geom name="lo_post_r" type="box" material="handle_mat" group="0"
+                pos=" 0.205 -0.139 0.000" size="0.010 0.010 0.011"/>
+          <geom class="region" name="lo_int" type="box" pos="0 0.000 0.000"
+                size="0.220 0.080 0.028"/>
         </body>
-        <geom class="region" name="reg_main" type="box" pos="0 0 0" size="0.250 0.150 0.110"/>
+
+        <body name="upper" pos="0 0 0.070">
+          <joint name="upper_slide" type="slide" axis="0 -1 0" limited="true" range="0 0.15"
+                 damping="1.0" frictionloss="0.3" armature="0.02"/>
+          <geom class="cab" name="up_bottom" pos="0  0.000 -0.038" size="0.228 0.088 0.008"/>
+          <geom class="cab" name="up_back"   pos="0  0.080  0.000" size="0.228 0.008 0.030"/>
+          <geom class="cab" name="up_left"   pos="-0.233 0.000 0.000" size="0.005 0.088 0.030"/>
+          <geom class="cab" name="up_right"  pos=" 0.233 0.000 0.000" size="0.005 0.088 0.030"/>
+          <geom class="cab" name="up_front"  pos="0 -0.118 0.000" size="0.253 0.010 0.046"
+                material="front_mat"/>
+<geom name="up_handle" type="box" material="handle_mat" group="0"
+                pos="0 -0.180 0.000" size="0.220 0.011 0.011"/>
+          <geom name="up_post_l" type="box" material="handle_mat" group="0"
+                pos="-0.205 -0.149 0.000" size="0.010 0.020 0.011"/>
+          <geom name="up_post_r" type="box" material="handle_mat" group="0"
+                pos=" 0.205 -0.149 0.000" size="0.010 0.020 0.011"/>
+          <geom class="region" name="up_int" type="box" pos="0 0.000 0.000"
+                size="0.220 0.080 0.028"/>
+        </body>
       </body>
     </body>
   </worldbody>

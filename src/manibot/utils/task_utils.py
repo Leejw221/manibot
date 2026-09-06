@@ -7,7 +7,41 @@ hdf5->zarr 변환이 그 경계에서 이름을 바꾼다. 이렇게 두지 않�
 시뮬/실물마다 다른 키를 찾게 되고, 결국 분기가 남는다.
 """
 
+import importlib
+
 from omegaconf import OmegaConf
+
+
+def resolve(path):
+    """"pkg.mod.Name" -> 그 객체. 모듈 import 부수효과로 레지스트리 등록도 일어난다."""
+    mod, _, name = path.rpartition(".")
+    return getattr(importlib.import_module(mod), name)
+
+
+def register_sim_modules(sim_cfg):
+    """환경·로봇·그리퍼를 robosuite 전역 레지스트리에 올린다.
+
+    robosuite 는 MujocoEnv/ManipulatorModel 서브클래스가 **import 되는 순간** 메타클래스가
+    등록하는 구조라, `suite.make(env_name=...)` 이 찾으려면 그 모듈이 먼저 import 돼 있어야
+    한다. 어느 모듈이 필요한지는 task 마다 다르므로(NERO 는 환경과 로봇이 다른 모듈이다)
+    설정에 적어 둔다 — 수집과 평가가 같은 목록을 쓰게 하기 위해서다.
+    """
+    for m in sim_cfg.get("env_modules") or []:
+        importlib.import_module(m)
+
+
+def sim_controller_config(sim_cfg):
+    """task 가 지정한 컨트롤러 설정. null 이면 robosuite 기본(BASIC=OSC).
+
+    ⚠️ **수집과 평가가 같은 컨트롤러여야 한다.** NERO 는 관절 위치 제어라 action 이
+    관절 절대각인데, 여기서 OSC 로 만들면 같은 16 차원 벡터가 전혀 다른 뜻이 된다
+    (에러 없이 성능으로만 나타난다).
+    """
+    fn = sim_cfg.get("controller_fn")
+    if not fn:
+        return None
+    kw = sim_cfg.get("controller_kwargs")
+    return resolve(fn)(**(OmegaConf.to_container(kw, resolve=True) if kw is not None else {}))
 
 
 def is_sim_task(task_cfg):
@@ -47,6 +81,7 @@ def make_eval_env(task_cfg, render=False, renderer="mjviewer", image_size_overri
             f"task '{task_cfg.name}' 에는 sim 블록이 없다 — 시뮬 env 를 만들 수 없는 실물 task 다."
         )
     sim = task_cfg.sim
+    register_sim_modules(sim)
     backend = sim.get("backend", "robosuite")
     if backend != "robosuite":
         raise NotImplementedError(
@@ -57,7 +92,11 @@ def make_eval_env(task_cfg, render=False, renderer="mjviewer", image_size_overri
 
     from manibot.envs.robomimic import make_image_env, make_lowdim_env, wrap_lerobot_obs
 
-    env_kwargs = OmegaConf.to_container(sim.env_kwargs, resolve=True) if sim.get("env_kwargs") else None
+    env_kwargs = OmegaConf.to_container(sim.env_kwargs, resolve=True) if sim.get("env_kwargs") else {}
+    ctrl = sim_controller_config(sim)
+    if ctrl is not None:
+        env_kwargs["controller_configs"] = ctrl
+    env_kwargs = env_kwargs or None
     gripper_types = sim.get("gripper_types", None)
     state_from = list(sim.state_from)
 

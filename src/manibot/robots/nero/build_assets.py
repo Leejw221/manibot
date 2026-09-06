@@ -351,8 +351,18 @@ def robot_mjcf(src_mjcf):
     for s in ("right", "left"):
         for b in wb.iter("body"):
             if b.get("name") == f"{s}_link7":
-                ET.SubElement(b, "body", {"name": f"{s}_hand",
-                                          "pos": HAND_POS, "quat": HAND_QUAT})
+                h = ET.SubElement(b, "body", {"name": f"{s}_hand",
+                                              "pos": HAND_POS, "quat": HAND_QUAT})
+                # 손목 카메라. 손가락이 ±y 로 열리므로 옆(+x)에 달고, 파지점(hand +z 0.0998)
+                # 을 겨눈다. 접근축 위에 그대로 두면 그리퍼 몸통이 화면을 다 막는다 [실측].
+                # 그리퍼 몸통이 hand 프레임에서 x[-0.033,0.042]·y±0.082·z[0,0.065] 를 차지하고
+                # 손가락이 z[0.062,0.138] 이다 [실측]. 그래서 x=0.10 (몸통 밖) · z=0.02 에 둔다.
+                # z 를 음수로만 두면 손목 링크 안쪽이라 팔 뒤통수만 보였다.
+                # **-x** 쪽에 단다 — 준비 자세에서 hand +x 가 아래를 향하므로, +x 에 달면
+                # 카메라가 손 밑에서 위(하늘)를 올려다본다 [실측: 시선 z=+0.71].
+                ET.SubElement(h, "camera", {"name": f"{s}_eye_in_hand", "mode": "fixed",
+                                            "pos": "-0.13 0 -0.02",
+                                            "xyaxes": "0 -1 0 -0.678 0 0.735", "fovy": "70"})
             if b.get("name") == f"{s}_link1":
                 ET.SubElement(b, "site", {"name": f"{s}_center", "pos": "0 0 0",
                                           "size": "0.01", "rgba": "0 0 1 0"})
@@ -363,6 +373,10 @@ def robot_mjcf(src_mjcf):
         if c.tag in ("geom", "body", "site"):
             wb.remove(c)
             base.append(c)
+    # 사람 시점(egocentric) 카메라 — 어깨(1.08) 위 머리 높이에서 앞아래를 본다.
+    # xyaxes 는 카메라 x·y 축이고 시선은 -z 다. 여기선 시선 (0.819,0,-0.574) = 앞으로 35° 내리깔기.
+    ET.SubElement(base, "camera", {"name": "ego", "mode": "fixed", "pos": "0.06 0 1.32",
+                                   "xyaxes": "0 -1 0 0.574 0 0.819", "fovy": "70"})
     wb.append(base)
 
     # 4) 메시 경로: meshdir 을 없애고 파일 경로에 폴더를 넣는다 (gripper_mjcf 의 주석 참조).
@@ -420,8 +434,14 @@ def gripper_mjcf(meshdir="meshes"):
         ET.SubElement(a, "mesh", {"name": n, "file": f"{meshdir}/{f}"})
     act = ET.SubElement(r, "actuator")
     for i, (_, _, jn, _, rng) in enumerate(FINGERS, start=1):
+        # ⚠️ forcerange 는 실측으로 정했다 [2026-09-06]. 패드가 없던 시절에는 20N 으로
+        # 물면 44mm 정육면체가 패드 사이로 **밀려 나가** 8N 이어야 했지만, 상자 패드를
+        # 붙인 뒤로는 밀림이 사라지고 오히려 힘이 모자랐다 — 세로로 긴 블록(0.09kg)을
+        # 8N 으로 들면 손만 5cm 올라가고 블록은 제자리였다.
+        #   8N -> 49mm · 16N -> 75mm · 30N -> 75mm  (목표 70mm)
+        # 16N 이면 충분하고 그 이상은 의미가 없다. 사람이 물건을 집는 힘 범위이기도 하다.
         ET.SubElement(act, "position", {"name": f"gripper_finger_joint{i}", "joint": jn,
-                                        "kp": "1000", "ctrlrange": rng, "forcerange": "-20 20"})
+                                        "kp": "1000", "ctrlrange": rng, "forcerange": "-16 16"})
     wb = ET.SubElement(r, "worldbody")
     g = ET.SubElement(wb, "body", {"name": "right_gripper", "pos": "0 0 0"})
     ET.SubElement(g, "inertial", {"pos": "0 0 0.03", "mass": "0.45",
@@ -457,10 +477,30 @@ def gripper_mjcf(meshdir="meshes"):
                                   "mesh": f"nero_finger{i}", "group": "1",
                                   "contype": "0", "conaffinity": "0", "rgba": ".8 .8 .82 1"})
         # 이름을 붙여야 GripperModel._important_geoms 가 파지 판정에 쓸 수 있다.
+        # 메시 접촉값은 Panda 와 같게 (딱딱하고 마찰 낮음) — 형상 충돌 담당.
         ET.SubElement(b, "geom", {"name": f"{bn}_collision", "type": "mesh",
                                   "mesh": f"nero_finger{i}", "group": "0",
-                                  "friction": "1 0.05 0.001", "condim": "4",
-                                  "solimp": "0.95 0.99 0.001", "solref": "0.005 1"})
+                                  "friction": "1 0.005 0.0001", "condim": "4",
+                                  "solref": "0.02 1"})
+        # **파지 패드**. 메시만으로 쥐면 물체를 못 든다 — 메시-상자 접촉이 불안정해서
+        # 44mm 블록을 40N 으로 물어도 손가락 사이로 흘러내렸고, 접촉을 무르게 하면
+        # 이번엔 개구가 29->5mm 로 **블록을 뚫고 들어갔다** [실측 2026-09-06].
+        # Panda 도 같은 이유로 메시가 아니라 작은 상자 패드로 쥔다 — 값도 그대로 쓴다.
+        ET.SubElement(b, "geom", {"name": f"{bn}_pad_collision", "type": "box",
+                                  # 손끝 쪽에 붙인다. 파지점 높이에 두면 패드가 물체의
+                                  # **윗모서리만** 물어 팔을 올릴 때 위로 벗겨졌다 [실측].
+                                  # hand 프레임 z 0.104~0.136 (손끝 0.138 바로 안쪽).
+                                  "pos": f"0 -0.0382 {-0.003 if i == 1 else 0.003}",
+                                  "size": "0.018 0.022 0.003", "group": "0",
+                                  # ⚠️ solref 는 **임계감쇠(둘째 값 1)** 로 둔다. Panda 패드의
+                                  # "0.01 0.5"(언더댐프드)를 그대로 쓰면 22mm 손잡이 막대를
+                                  # 물고 당길 때 접촉력이 2564N 까지 튀며 막대가 패드를
+                                  # 뚫고 빠져나갔다 (개구 29->6mm) [실측 2026-09-06].
+                                  # 블록(44mm 정육면체)에서는 안 터졌다 — 얇은 물체에서만
+                                  # 드러나는 문제라 오래 못 찾았다.
+                                  "friction": "2 0.05 0.0001", "condim": "4",
+                                  "solref": "0.02 1", "solimp": "0.95 0.99 0.001",
+                                  "rgba": "0.2 0.2 0.2 1"})
     return r
 if __name__ == "__main__":
     main()

@@ -1,0 +1,63 @@
+# @package _global_
+
+# robosuite 가 84x84 로 렌더하므로 따로 줄이지 않는다 (robomimic 관례와 동일).
+resize_shape: null
+crop_shape: [76, 76]
+
+task:
+  name: nero_drawer
+
+  # **정책 입력은 로봇에 붙은 카메라 3대뿐이다** [사용자 2026-09-06]. 사람 시점(ego) +
+  # 양 손목. agentview 는 진행 상황을 사람이 보기 위한 것이라 수집만 하고 여기 안 넣는다
+  # — 외부에 세운 카메라는 실물로 옮길 때 재현이 안 된다.
+  image_keys:
+    - observation.images.ego
+    - observation.images.wrist_right
+    - observation.images.wrist_left
+  state_key: observation.state
+  action_key: action
+  state_dim: 18     # 14 (양팔 관절) + 2 + 2 (양 그리퍼 손가락)
+  fps: 20
+  action_dim: 16    # 오른팔 7 + 왼팔 7 + 그리퍼 2 — **관절 절대위치** 지령이다
+
+  hdf5_path: ${oc.env:MANIBOT_DATASETS_DIR,data}/nero_drawer/demos.hdf5
+  dataset_repo_id: null
+  dataset_root: ${oc.env:MANIBOT_DATASETS_DIR,data}/nero_drawer/zarr
+
+  override_stats:
+    observation.images.ego:
+      mean: [[[0.485]], [[0.456]], [[0.406]]]
+      std: [[[0.229]], [[0.224]], [[0.225]]]
+    observation.images.wrist_right:
+      mean: [[[0.485]], [[0.456]], [[0.406]]]
+      std: [[[0.229]], [[0.224]], [[0.225]]]
+    observation.images.wrist_left:
+      mean: [[[0.485]], [[0.456]], [[0.406]]]
+      std: [[[0.229]], [[0.224]], [[0.225]]]
+
+  sim:
+    backend: robosuite
+    env_name: DrawerTask
+    robots: Nero
+    image_size: 84
+    # 스크립트 시연이 2100~2200 스텝이다. rollout 은 조금 넉넉히.
+    max_steps: 3000
+    gripper_types: null
+    # 레지스트리 등록(환경·로봇·그리퍼)은 이 모듈들을 import 하는 부수효과로 일어난다.
+    # NERO 는 환경과 로봇이 다른 모듈이라 둘 다 필요하다.
+    env_modules: [manibot.envs.drawer, manibot.robots.nero.sim]
+    expert: manibot.envs.drawer_expert.DrawerExpert
+    # ⚠️ OSC 가 아니라 **관절 위치 제어**다. OSC 는 영공간이 리셋 자세로 당겨서, 기구학적
+    # 으로 닿는 지점인데도 제어가 8~34 cm 못 갔다 [실측 2026-09-06].
+    controller_fn: manibot.robots.nero.sim.controller_config
+    controller_kwargs:
+      joint_space: true
+    env_kwargs: null
+    # 이 순서가 곧 observation.state 의 성분 순서다 — 수집·변환·평가가 같아야 한다.
+    state_from: [robot0_joint_pos, robot0_right_gripper_qpos, robot0_left_gripper_qpos]
+    cameras:
+      robot0_ego: observation.images.ego
+      robot0_right_eye_in_hand: observation.images.wrist_right
+      robot0_left_eye_in_hand: observation.images.wrist_left
+    # 수집 때 hdf5 에만 남기는 관찰용 카메라 — zarr 변환·학습에는 안 들어간다.
+    monitor_cameras: [agentview]

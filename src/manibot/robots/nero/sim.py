@@ -47,10 +47,10 @@ class NeroGripperBase(GripperModel):
     @property
     def _important_geoms(self):
         return {
-            "left_finger": ["leftfinger_collision"],
-            "right_finger": ["rightfinger_collision"],
-            "left_fingerpad": ["leftfinger_collision"],
-            "right_fingerpad": ["rightfinger_collision"],
+            "left_finger": ["leftfinger_collision", "leftfinger_pad_collision"],
+            "right_finger": ["rightfinger_collision", "rightfinger_pad_collision"],
+            "left_fingerpad": ["leftfinger_pad_collision"],
+            "right_fingerpad": ["rightfinger_pad_collision"],
         }
 
 
@@ -113,20 +113,25 @@ class Nero(ManipulatorModel):
                  joint2 여유가 9.7° 뿐이라 리셋 자세로 쓰면 안 된다.
           준비 : 여기. 매 에피소드가 여기서 시작하고, 실물도 조립 자세에서 여기로 와서 시작한다.
 
-        **손 자세를 지정하는 IK 로 풀지 않았다.** 그렇게 풀면 손목이 꺾인 해가 나온다
-        (사용자가 휴머노이드 준비 자세 사진과 대조해 지적). 사람의 준비 자세는 손목이 펴져
-        아래팔을 그대로 잇는다. 그래서 **손목(joint5,6,7)과 위팔 롤(joint3)을 0 으로 고정**하고
-        joint1·2·4 만 훑어, 팔꿈치가 어깨보다 낮고 손이 작업대 위 7~15cm 에 오는 해 중
-        관절 여유가 큰 것을 골랐다 [2026-09-06]:
-            팔꿈치 z=0.914 (어깨 1.08 보다 17cm 아래) · 여유 42° · 손 작업대+0.075
+        모양은 **'ㄴ' 자**다 — 위팔은 어깨에서 곧게 내려오고 아래팔은 앞으로 수평,
+        손목은 편다 [사용자 2026-09-06: *"초기 위치를 팔을 'ㄴ'자처럼 구성"*].
 
-        관절 3개만 0 이 아니라 실물에 그대로 명령하기도 쉽다.
+        앞선 값 (48,53,0,80,0,0,0) 은 이걸 못 만들었다. joint3(위팔 롤)을 0 으로 고정해
+        두었기 때문이다 — joint4(팔꿈치)의 굽힘축이 월드 x 에 붙박여서, 팔꿈치를 굽히면
+        아래팔이 **앞이 아니라 옆**으로 간다. 그래서 팔이 비스듬히 뻗은 자세밖에 안 나왔고,
+        거기서 작업 지점으로 가려면 IK 가 다른 가지로 넘어가며 팔이 한 바퀴 돌았다
+        (사용자가 영상에서 지적).
 
-        ⚠️ 팔꿈치를 더 내리긴 어렵다. 기하학상 한계는 0.78 이지만 그 해는 joint1 이 한계
-        (-155°)에 1.1° 남기고 붙는다. 장착 각도를 90° 단위로 바꿔도 네 방향 모두 같아
-        **재조립으로 풀리는 문제가 아니다**(확인함) — 관절 한계 자체의 성질이다.
+        기구학 [실측 2026-09-06]: 영자세는 T자세(팔이 -y 로 수평). joint1=위팔 롤,
+        joint2=어깨 피치(축 x), joint3=위팔 롤, joint4=팔꿈치(축 x), joint5~7=손목.
+        joint2 로 위팔을 내리면 팔꿈치 축이 x 에 남으므로, **joint3 로 90° 돌려야**
+        팔꿈치 굽힘이 앞뒤 방향이 된다. 그래서 j3=90 · j4=88 이 'ㄴ' 의 핵심이다.
+
+        j2=72 는 완전 수직(90)에서 18° 물러선 값이다. 90 이면 joint2 한계(99.7°)에 9.7°
+        밖에 안 남고 팔이 몸통에 닿는다. 72 로 두면 여유 27.7° · 접촉 0:
+            팔꿈치 z=0.785 (어깨 1.08 보다 30cm 아래) · 손 (-0.24, ∓0.33, 0.78) = 작업대+0.14
         """
-        right = np.radians([48.0, 53.0, 0.0, 80.0, 0.0, 0.0, 0.0])
+        right = np.radians([0.0, 72.0, 90.0, 88.0, 0.0, 0.0, 0.0])
         return np.concatenate([right, right * MIRROR])
 
     @property

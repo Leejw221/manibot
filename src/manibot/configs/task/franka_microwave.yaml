@@ -34,6 +34,9 @@ task:
   sim:
     backend: robosuite
     # manibot.envs.microwave 가 import 부수효과로 robosuite 레지스트리에 등록한다.
+    env_modules: [manibot.envs.microwave]
+    expert: manibot.envs.microwave_expert.MicrowaveExpert
+    controller_fn: null          # null 이면 robosuite BASIC(OSC) 을 쓴다
     env_name: MicrowaveTask
     robots: Panda
     image_size: 84

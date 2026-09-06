@@ -61,7 +61,9 @@
                     <geom type="mesh" mesh="link7" />
                     <geom pos="0.031 0 -0.0235" quat="0.499998 -0.5 0.500002 -0.5" type="mesh" contype="0" conaffinity="0" group="1" density="0" mesh="gripper_flange" />
                     <geom pos="0.031 0 -0.0235" quat="0.499998 -0.5 0.500002 -0.5" type="mesh" mesh="gripper_flange" />
-                    <body name="right_hand" pos="0.037 0 -0.0235" quat="0.5 -0.5 0.5 -0.5" />
+                    <body name="right_hand" pos="0.037 0 -0.0235" quat="0.5 -0.5 0.5 -0.5">
+                      <camera name="right_eye_in_hand" mode="fixed" pos="-0.13 0 -0.02" xyaxes="0 -1 0 -0.678 0 0.735" fovy="70" />
+                    </body>
                   </body>
                 </body>
               </body>
@@ -107,7 +109,9 @@
                     <geom type="mesh" mesh="link7" />
                     <geom pos="0.031 0 -0.0235" quat="0.499998 -0.5 0.500002 -0.5" type="mesh" contype="0" conaffinity="0" group="1" density="0" mesh="gripper_flange" />
                     <geom pos="0.031 0 -0.0235" quat="0.499998 -0.5 0.500002 -0.5" type="mesh" mesh="gripper_flange" />
-                    <body name="left_hand" pos="0.037 0 -0.0235" quat="0.5 -0.5 0.5 -0.5" />
+                    <body name="left_hand" pos="0.037 0 -0.0235" quat="0.5 -0.5 0.5 -0.5">
+                      <camera name="left_eye_in_hand" mode="fixed" pos="-0.13 0 -0.02" xyaxes="0 -1 0 -0.678 0 0.735" fovy="70" />
+                    </body>
                   </body>
                 </body>
               </body>
@@ -116,6 +120,7 @@
         </body>
         <site name="left_center" pos="0 0 0" size="0.01" rgba="0 0 1 0" />
       </body>
+      <camera name="ego" mode="fixed" pos="0.06 0 1.32" xyaxes="0 -1 0 0.574 0 0.819" fovy="70" />
     </body>
   </worldbody>
   <contact>
