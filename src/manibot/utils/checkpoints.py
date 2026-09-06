@@ -151,3 +151,33 @@ def load_model_weights(model, checkpoint_dir, device):
         )
 
     return model
+
+
+def load_ema_weights(model, checkpoint_dir, device):
+    """체크포인트의 **EMA 가중치**를 모델에 덮어쓴다. 없으면 False.
+
+    `save_checkpoint` 은 raw 가중치를 `model.safetensors` 에 쓰고 EMA 는
+    `training_state.pt` 안에 따로 둔다. 그래서 `load_model_weights` 만 부르면 학습 중
+    가중치가 로드되는데, **학습 중 검증(validate_offline/online)은 EMA 를 쓴다** —
+    같은 체크포인트를 두고 학습 로그의 수치와 `scripts/eval.py` 의 수치가 갈린다.
+    diffusion policy 는 EMA 차이가 성능으로 나타나므로 평가는 EMA 쪽에 맞춘다.
+
+    diffusers `EMAModel` 은 `EMAModel(parameters=policy.parameters())` 로 만들어져
+    `shadow_params` 의 순서가 `model.parameters()` 순서와 같다 — 그 순서로 복사한다
+    (safetensors 의 키 순서와는 다르다. 거기엔 파라미터가 아닌 버퍼도 섞여 있다).
+    """
+    state_file = Path(checkpoint_dir) / "training_state.pt"
+    if not state_file.exists():
+        return False
+    ema = torch.load(state_file, map_location=device, weights_only=False).get("ema")
+    if not ema or "shadow_params" not in ema:
+        return False
+    shadow = ema["shadow_params"]
+    params = list(model.parameters())
+    if len(shadow) != len(params):
+        logger.warning(f"EMA 파라미터 수 불일치 ({len(shadow)} vs {len(params)}) — 건너뛴다")
+        return False
+    with torch.no_grad():
+        for s, p in zip(shadow, params):
+            p.copy_(s.to(p.device, dtype=p.dtype))
+    return True

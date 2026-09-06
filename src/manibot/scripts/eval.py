@@ -18,7 +18,8 @@ from omegaconf import DictConfig, OmegaConf
 
 from manibot.policies.factory import make_policy
 from manibot.rollout import make_predict_fn
-from manibot.utils.checkpoints import get_best_checkpoint, get_latest_checkpoint, load_model_weights
+from manibot.utils.checkpoints import (get_best_checkpoint, get_latest_checkpoint,
+                                       load_ema_weights, load_model_weights)
 from manibot.utils.dataset_utils import create_dataset_stats
 from manibot.utils.eval import eval_policy
 from manibot.utils.logger import setup_logging
@@ -51,7 +52,10 @@ def evaluate(cfg: DictConfig):
     if checkpoint is None:
         raise FileNotFoundError(f"체크포인트를 찾을 수 없다: {cfg.checkpoint_dir}")
     load_model_weights(policy, checkpoint, cfg.device)
-    logger.info(f"Loaded checkpoint: {checkpoint}")
+    # 학습 중 검증이 EMA 를 쓰므로 여기서도 맞춘다 — 안 맞추면 같은 체크포인트인데
+    # 학습 로그의 수치와 여기 수치가 갈린다 (checkpoints.load_ema_weights 참고).
+    used_ema = cfg.get("use_ema", True) and load_ema_weights(policy, checkpoint, cfg.device)
+    logger.info(f"Loaded checkpoint: {checkpoint} (EMA {'적용' if used_ema else '없음'})")
 
     policy.eval()
     env = make_eval_env(cfg.task)
