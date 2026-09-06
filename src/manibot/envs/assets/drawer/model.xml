@@ -1,0 +1,61 @@
+<mujoco model="drawer">
+  <!--
+    서랍장 — NERO 양팔 분업용으로 직접 만들었다.
+
+    **왜 직접 만드나**: robocasa 의 drawer.xml 은 손잡이도 앞판도 없는 뼈대(0.36x0.60x0.60)라
+    그대로 못 쓴다. 크기를 NERO 작업 영역(팔당 25x20cm, 팔이 몸 중앙을 못 넘음)에 맞춰야 한다.
+
+    **왜 서랍인가**: 여닫이 문은 손잡이가 호를 그리며 좌우로 크게 움직여 NERO 가 못 연다
+    (전자레인지 실측: x 0.345m · y 0.244m 이동). 서랍은 **직선 0.18m** 이고 좌우 이동이 0 이라
+    한 팔 영역 안에 들어온다. 게다가 손잡이가 가로 막대라 **왼팔은 왼쪽 끝, 오른팔은
+    서랍 안 오른쪽**으로 갈라 쓸 수 있다 — 양팔 분업이 성립하는 유일한 형태.
+
+    정면은 -y 를 향한다 (robocasa 관례와 같게). 환경이 z축 -90° 로 돌려 로봇을 보게 한다.
+  -->
+  <compiler angle="radian"/>
+  <asset>
+    <material name="body_mat" rgba="0.72 0.68 0.62 1" shininess="0.2" specular="0.3"/>
+    <material name="front_mat" rgba="0.45 0.42 0.40 1" shininess="0.3" specular="0.4"/>
+    <material name="handle_mat" rgba="0.80 0.80 0.84 1" shininess="0.8" specular="0.8"/>
+  </asset>
+  <default>
+    <default class="cab"><geom group="0" type="box" material="body_mat"/></default>
+    <default class="region"><geom group="1" conaffinity="0" contype="0" rgba="0 1 0 0"/></default>
+  </default>
+  <worldbody>
+    <body>
+      <body name="object">
+        <!-- 몸통: 좌우 옆판 · 뒷판 · 윗판 · 바닥.  전체 0.50(x) x 0.30(y) x 0.22(z) -->
+        <geom class="cab" name="side_l" pos="-0.24  0.00  0.00" size="0.010 0.150 0.110"/>
+        <geom class="cab" name="side_r" pos=" 0.24  0.00  0.00" size="0.010 0.150 0.110"/>
+        <geom class="cab" name="back"   pos=" 0.00  0.140 0.00" size="0.250 0.010 0.110"/>
+        <geom class="cab" name="top"    pos=" 0.00  0.00  0.100" size="0.250 0.150 0.010"/>
+        <geom class="cab" name="floor"  pos=" 0.00  0.00 -0.100" size="0.250 0.150 0.010"/>
+
+        <!-- 서랍: -y 로 0.18 m 나온다 -->
+        <body name="drawer">
+          <joint name="slidejoint" type="slide" axis="0 -1 0" limited="true" range="0 0.18"
+                 damping="6" frictionloss="1.5" armature="0.01"/>
+          <geom class="cab" name="dw_bottom" pos="0 0 -0.070" size="0.225 0.135 0.008"/>
+          <geom class="cab" name="dw_back"   pos="0 0.130 -0.020" size="0.225 0.008 0.045"/>
+          <geom class="cab" name="dw_left"   pos="-0.220 0 -0.020" size="0.008 0.135 0.045"/>
+          <geom class="cab" name="dw_right"  pos=" 0.220 0 -0.020" size="0.008 0.135 0.045"/>
+          <geom class="cab" name="dw_front" type="box" material="front_mat"
+                pos="0 -0.150 0.000" size="0.245 0.010 0.085" group="0"/>
+          <!-- 손잡이: 가로 막대. 왼쪽 끝은 왼팔이, 오른쪽 끝은 오른팔이 잡을 수 있다.
+               ⚠️ 앞판과의 틈이 중요하다 — NERO 손가락은 파지점에서 38mm 뻗으므로
+               틈이 그보다 작으면 손가락이 앞판에 막혀 못 문다 (12mm 로 뒀다가 실패했다).
+               띄움 65mm 로 두어 틈 54mm 를 확보한다 [실측 2026-09-06]. -->
+          <geom name="handle" type="box" material="handle_mat" group="0"
+                pos="0 -0.225 0.030" size="0.200 0.011 0.011"/>
+          <geom name="handle_post_l" type="box" material="handle_mat" group="0"
+                pos="-0.185 -0.193 0.030" size="0.010 0.032 0.011"/>
+          <geom name="handle_post_r" type="box" material="handle_mat" group="0"
+                pos=" 0.185 -0.193 0.030" size="0.010 0.032 0.011"/>
+          <geom class="region" name="reg_int" type="box" pos="0 0 -0.020" size="0.215 0.130 0.042"/>
+        </body>
+        <geom class="region" name="reg_main" type="box" pos="0 0 0" size="0.250 0.150 0.110"/>
+      </body>
+    </body>
+  </worldbody>
+</mujoco>

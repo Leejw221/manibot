@@ -114,12 +114,22 @@ class NeroMicrowave(MicrowaveTask):
     Franka 로 먼저 세운 그 task 를 그대로 옮기는 것이 목적이라 배치 상수만 덮어쓴다.
     """
 
+    # 실물 크기(폭 0.547)는 NERO 작업 영역에 안 들어간다 — 문을 여는 동안 손잡이가 x 로
+    # 0.345 m 움직이는데 한 팔의 쓸 만한 폭이 그만큼 안 된다. 0.85 배(폭 0.465, 시중
+    # 컴팩트 모델 크기)로 줄이면 여유 10° 로 성립한다 [실측 2026-09-06].
+    # 배치·여는 각도도 그 탐색에서 나온 값이다 (ox=0.55 · oy=0.25 · 60°).
+    microwave_asset = "microwave_s085"
     table_full_size = TABLE_SIZE
     table_offset = (0.0, 0.0, TABLE_HEIGHT)
     base_xpos = (BASE_X, 0.0, 0.0)
-    microwave_xy = (0.10, 0.05)
-    cube_x_range = (-0.20, -0.12)
-    cube_y_range = (-0.28, -0.20)
+    microwave_xy = (BASE_X + 0.55, 0.25)
+    open_target = -1.05              # -60°. 실물 크기 때보다 덜 연다
+    # 전자레인지 정면은 -x(로봇 쪽)를 향하고 문은 +y 로 열린다. 그래서 카메라는
+    # **오른쪽(-y)** 에서 본다 — +x 쪽에서 보면 전자레인지 뒷면만 보인다.
+    cameras = {"agentview": ((-0.95, -0.85, 1.35), (-0.10, 0.20, 0.82)),
+               "frontview": ((-0.15, -1.10, 1.25), (-0.15, 0.20, 0.80))}
+    cube_x_range = (-0.24, -0.16)
+    cube_y_range = (0.26, 0.34)      # 접시는 **왼쪽** — 삽입도 왼팔이 하므로
 
     def _set_ready_qpos(self):
         # NERO 는 양팔이고 초기 자세를 이미 실측으로 잡아 두었다 (robots/nero/sim.py).

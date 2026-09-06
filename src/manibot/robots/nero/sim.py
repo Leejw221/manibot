@@ -155,19 +155,33 @@ class Nero(ManipulatorModel):
         return {"right": "right_hand", "left": "left_hand"}
 
 
-def controller_config(controller: str = "BASIC") -> dict:
+def controller_config(controller: str = "BASIC", joint_space: bool = False) -> dict:
     """NERO 용 컨트롤러 설정.
 
     ⚠️ robosuite 기본값은 `input_ref_frame="base"` 인데, NERO 는 팔이 몸통 옆면에 ±90°
-    돌아 붙어 있어 그 프레임에서는 **축이 뒤바뀐다** — `x+` 를 명령하면 말단이 −y 로 간다
+    돌아 붙어 있어 그 프레임에서는 **축이 뒤바뀐다** — `x+` 를 명령하면 말단이 -y 로 간다
     [실측 2026-09-05]. 고정 설치 로봇이므로 world 기준으로 두는 게 맞다.
 
     ⚠️ 양팔 action 배치는 `[right 6, left 6, right_grip 1, left_grip 1]` 이다.
     단일팔(Panda)의 `[pos3, ori3, grip1]` 을 그대로 적용하면 왼팔 명령이 밀려 들어간다.
+
+    `joint_space=True` 면 **관절 위치 제어**(절대값)로 바꾼다. 스크립트 시연에는 이쪽이
+    맞다 — OSC 는 영공간이 리셋 자세로 당겨서, 리셋 자세에서 먼 목표에는 기구학적으로
+    닿는데도 제어가 못 간다 (IK 여유 15~35° 인 지점에 제어 오차 8~34 cm) [실측 2026-09-06].
+    IK 로 관절값을 구해 그대로 명령하면 그 문제가 없다.
     """
     cfg = load_composite_controller_config(controller=controller, robot="Nero")
     for arm in ("right", "left"):
-        cfg["body_parts"][arm]["input_ref_frame"] = "world"
+        part = cfg["body_parts"][arm]
+        if joint_space:
+            part.update(type="JOINT_POSITION", input_type="absolute", impedance_mode="fixed",
+                        kp=1500, damping_ratio=1.0,   # 300 은 정상상태 오차 2°, 1500 이면 1° 미만
+                        input_max=[1.0] * 7, input_min=[-1.0] * 7,
+                        output_max=[1.0] * 7, output_min=[-1.0] * 7,
+                        kp_limits=[0, 1000], damping_ratio_limits=[0, 10],
+                        qpos_limits=None, interpolation=None, ramp_ratio=0.2)
+        else:
+            part["input_ref_frame"] = "world"
     return cfg
 
 

@@ -26,8 +26,8 @@ from robosuite.utils.placement_samplers import UniformRandomSampler
 
 from manibot.envs.ik import ArmIK, frame, roll, rot_z
 
-MICROWAVE_XML = os.path.join(os.path.dirname(os.path.abspath(__file__)),
-                             "assets", "microwave", "model.xml")
+ASSETS = os.path.join(os.path.dirname(os.path.abspath(__file__)), "assets")
+MICROWAVE_XML = os.path.join(ASSETS, "microwave", "model.xml")
 
 # 전자레인지 정면은 자기 좌표계의 -y 를 향한다. 로봇은 -x 쪽에서 +x 를 보므로 z축 -90°.
 FRONT_TO_MINUS_X = np.array([0.70710678, 0.0, 0.0, -0.70710678])
@@ -71,8 +71,8 @@ class Microwave(MujocoXMLObject):
     끌려오면 task 가 성립하지 않는다.
     """
 
-    def __init__(self, name="microwave"):
-        super().__init__(MICROWAVE_XML, name=name, joints=None,
+    def __init__(self, name="microwave", asset="microwave"):
+        super().__init__(os.path.join(ASSETS, asset, "model.xml"), name=name, joints=None,
                          obj_type="all", duplicate_collision_geoms=False)
 
 
@@ -90,6 +90,10 @@ class MicrowaveTask(ManipulationEnv):
     # 전자레인지 y 를 0.05 -> 0.10 으로 옮긴 이유는 팔이 문 여는 호를 지날 때의 관절 여유다
     # (최소 여유 7° -> 13.5°, IK 로 배치·roll 을 함께 훑어 고름 [2026-09-05]).
     microwave_xy = (0.16, 0.10)      # 작업대 중심 기준. z 는 상판 위에 얹는다
+    microwave_asset = "microwave"    # assets/ 아래 폴더. 축소판은 scale_asset.py 로 만든다
+    # 카메라는 배치마다 달라야 한다 — 기본값은 Panda·작업대 0.8 기준이다.
+    cameras = {"agentview": ((-0.72, -0.88, 1.50), (-0.02, 0.05, 0.92)),
+               "frontview": ((-0.85, -0.95, 1.60), (-0.05, 0.05, 0.93))}
     cube_x_range = (-0.20, -0.12)
     cube_y_range = (-0.28, -0.20)
     cube_size = 0.022
@@ -164,8 +168,7 @@ class MicrowaveTask(ManipulationEnv):
         # ⚠️ TableArena 의 기본 agentview 는 x=+0.5 에서 로봇을 마주 본다 — 그 자리는 지금
         # 전자레인지 **안쪽**이라 회색 벽만 찍힌다 [실측 2026-09-05]. 전자레인지 정면이
         # -x 를 향하므로 카메라는 옆(-y)에서 본다.
-        for name, eye, tgt in (("agentview", (-0.72, -0.88, 1.50), (-0.02, 0.05, 0.92)),
-                               ("frontview", (-0.85, -0.95, 1.60), (-0.05, 0.05, 0.93))):
+        for name, (eye, tgt) in self.cameras.items():
             arena.set_camera(camera_name=name, pos=list(eye), quat=list(_look_at(eye, tgt)))
 
         tex = CustomMaterial(texture="WoodRed", tex_name="redwood", mat_name="redwood_mat",
@@ -186,7 +189,7 @@ class MicrowaveTask(ManipulationEnv):
             self.placement_initializer.reset()
             self.placement_initializer.add_objects(self.cube)
 
-        self.microwave = Microwave()
+        self.microwave = Microwave(asset=self.microwave_asset)
         pos = np.array([self.microwave_xy[0], self.microwave_xy[1], self.table_offset[2]])
         # 전자레인지 원점은 몸통 중심이라 상판 위에 얹으려면 반높이만큼 올린다.
         pos[2] += self._microwave_half_height()
