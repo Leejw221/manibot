@@ -32,8 +32,24 @@ def _frames_to_video(frames, path: Path, fps: float) -> None:
     write_video(str(path), stacked, fps)
 
 
+def _progress(env):
+    """task 가 단계별 진행을 들고 있으면 그 사본. 없으면 None.
+
+    성공률만으로는 실패를 못 읽는다 — "손잡이도 못 잡았다"와 "다 하고 복귀에서 실패했다"가
+    같은 0 으로 보인다. 여러 단계를 순서대로 통과해야 하는 task 는 어디서 멈췄는지가
+    다음에 무엇을 고칠지를 정한다. 그런 dict 가 없는 task 는 그냥 None 이다.
+    """
+    inner = getattr(env, "env", None)
+    p = getattr(inner, "progress", None)
+    if not isinstance(p, dict):
+        return None
+    # numpy bool 이 섞여 들어온다(판정을 numpy 비교로 하는 단계가 있다). 그대로 두면
+    # 결과를 json 으로 쓸 때 "Object of type bool is not JSON serializable" 로 터진다.
+    return {k: bool(v) for k, v in p.items()}
+
+
 def rollout_episode(env, predict_fn, obs_horizon, action_horizon, max_steps, video_key=None):
-    """Run one episode. Returns (success, sum_reward, max_reward, steps, frames)."""
+    """Run one episode. Returns (success, sum_reward, max_reward, steps, frames, progress)."""
     obs = env.reset()
     history = deque([obs] * obs_horizon, maxlen=obs_horizon)
     frames = [obs[video_key]] if video_key else None
@@ -57,7 +73,8 @@ def rollout_episode(env, predict_fn, obs_horizon, action_horizon, max_steps, vid
             if steps >= max_steps:
                 break
 
-    return success, float(np.sum(rewards)), float(np.max(rewards) if rewards else 0.0), steps, frames
+    return (success, float(np.sum(rewards)), float(np.max(rewards) if rewards else 0.0),
+            steps, frames, _progress(env))
 
 
 def eval_policy(
@@ -82,19 +99,30 @@ def eval_policy(
     per_episode, video_paths = [], []
     for ep in range(n_episodes):
         record = videos_dir is not None and video_key is not None and ep < max_episodes_rendered
-        success, sum_r, max_r, steps, frames = rollout_episode(
+        success, sum_r, max_r, steps, frames, prog = rollout_episode(
             env, predict_fn, obs_horizon, action_horizon, max_steps,
             video_key=video_key if record else None,
         )
         per_episode.append({"episode": ep, "success": success, "sum_reward": sum_r,
-                            "max_reward": max_r, "steps": steps})
+                            "max_reward": max_r, "steps": steps,
+                            **({"progress": prog} if prog else {})})
         if record and frames:
             path = Path(videos_dir) / f"eval_episode_{ep}.mp4"
             _frames_to_video(frames, path, fps)
             video_paths.append(str(path))
         done = ep + 1
         n_ok = sum(e["success"] for e in per_episode)
-        logger.info(f"eval ep {ep}: success={success} steps={steps} | 누적 {n_ok}/{done} ({n_ok/done:.1%})")
+        flags = "" if not prog else " " + "".join(
+            (k[0].upper() if v else "-") for k, v in prog.items())
+        logger.info(f"eval ep {ep}: success={success} steps={steps}{flags} | "
+                    f"누적 {n_ok}/{done} ({n_ok/done:.1%})")
+
+    stages = {}
+    if per_episode and "progress" in per_episode[0]:
+        stages = {k: 100.0 * float(np.mean([e["progress"][k] for e in per_episode]))
+                  for k in per_episode[0]["progress"]}
+        logger.info("단계별 통과율: "
+                    + " · ".join(f"{k} {v:.0f}%" for k, v in stages.items()))
 
     return {
         "aggregated": {
@@ -103,5 +131,6 @@ def eval_policy(
             "avg_max_reward": float(np.mean([e["max_reward"] for e in per_episode])),
         },
         "per_episode": per_episode,
+        "stage_pass_rate": stages,
         "video_paths": video_paths,
     }
