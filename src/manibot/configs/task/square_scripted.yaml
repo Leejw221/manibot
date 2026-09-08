@@ -1,0 +1,19 @@
+# @package _global_
+
+# robomimic_square 와 **환경·관측 규약이 같고 데이터만 다르다** — 공개 robomimic 데이터는
+# 사람 텔레오퍼 궤적이고, 이쪽은 SquareExpert(스크립트)가 만든 시연이다.
+# 그래서 env·카메라·state 순서는 전부 상속하고 경로 둘만 바꾼다.
+defaults:
+  - robomimic_square
+  - _self_
+
+task:
+  name: square_scripted
+  hdf5_path: ${oc.env:MANIBOT_DATASETS_DIR,data}/square_scripted/demos.hdf5
+  dataset_root: ${oc.env:MANIBOT_DATASETS_DIR,data}/square_scripted_zarr
+  sim:
+    # 스크립트 시연이 316.8 스텝이라 robomimic 표준 400 은 여유가 1.26배뿐이다.
+    # 정책이 전문가보다 조금만 느려도 시간 초과로 실패 처리된다 — 공개 square-ph 는
+    # 시연 150.8 에 horizon 400 이라 2.65배 여유다.  여기만 늘리고 공개 데이터용
+    # robomimic_square 는 표준 400 을 지킨다.
+    max_steps: 500

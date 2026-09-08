@@ -10,3 +10,5 @@ seed: 0
 max_steps: 2500
 # 실패한 에피소드는 버린다 — 시연 데이터는 성공만 담는다.
 keep_failures: false
+# 너트 yaw 를 360° 에 고르게 깐다. 무작위면 50개에 최대 28° 구멍이 생기는데 격자면 7.2° 다.
+yaw_grid: false

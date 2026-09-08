@@ -1,0 +1,15 @@
+defaults:
+  - task: square_scripted
+  - _self_
+
+# 올릴 곳. 반드시 지정한다.
+repo_id: ???
+# 데이터셋의 자연어 task 설명 — LeRobot 은 프레임마다 이걸 요구한다.
+single_task: ???
+# null 이면 task.hdf5_path 를 그대로 쓴다.
+hdf5_path: null
+# 0/null 이면 전부. 소수만 만들어 확인할 때 쓴다.
+max_episodes: null
+push: true
+private: false
+tags: [robosuite, robomimic, scripted]

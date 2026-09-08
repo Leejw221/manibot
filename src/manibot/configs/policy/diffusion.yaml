@@ -9,7 +9,7 @@ policy:
   name: diffusion
   action_horizon: 8
   pred_horizon: 16
-  obs_horizon: 1
+  obs_horizon: 2
 
   # Vision encoder
   # 원본 Diffusion Policy 구현을 따른다 — scratch ResNet18 의 BatchNorm 을 GroupNorm 으로
@@ -23,7 +23,13 @@ policy:
   noise_scheduler:
     type: DDIM
     num_train_timesteps: 100
-    num_inference_steps: 20
+    # DDIM 10 — 원문 Diffusion Policy 의 **실물** 설정(§3.4 "100 training iterations and
+    # 10 inference iterations")과 같다.  시뮬 벤치마크는 DDPM 100 이지만 우리는 비동기 배포를
+    # 쓰므로 전부 DDIM 으로 통일한다 [사용자 결정 2026-09-08].
+    # 근거: 청크 재생이 action_horizon/fps = 8/20 = 400 ms 인데 그 안에 추론이 들어가야
+    # 비동기로 가려진다.  DDIM 20 이 224 ms(실측), DDPM 100 은 약 1.1 s 로 못 들어간다.
+    # ⚠ 대가: 원문 시뮬 수치(square 35% 등)와 조건이 달라 직접 비교는 못 한다.
+    num_inference_steps: 10
     beta_start: 0.0001
     beta_end: 0.02
     beta_schedule: squaredcos_cap_v2

@@ -1,0 +1,8 @@
+# @package _global_
+defaults:
+  - robomimic_square
+  - _self_
+task:
+  name: square_heldout
+  hdf5_path: ${oc.env:MANIBOT_DATASETS_DIR,data}/square_scripted/heldout.hdf5
+  dataset_root: ${oc.env:MANIBOT_DATASETS_DIR,data}/square_heldout_zarr

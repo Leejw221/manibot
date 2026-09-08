@@ -32,6 +32,9 @@ task:
   # 시뮬 백엔드. robosuite 고유 이름은 이 블록 안에만 존재한다.
   sim:
     backend: robosuite
+    # 스크립트 시연·개입 교정 행동을 내는 전문가 (collect_scripted 가 이걸 쓴다).
+    expert: manibot.envs.square_expert.SquareExpert
+    controller_fn: null          # null 이면 robosuite BASIC(OSC) 을 쓴다
     env_name: NutAssemblySquare
     robots: Panda
     image_size: 84

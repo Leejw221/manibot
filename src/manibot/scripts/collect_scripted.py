@@ -24,6 +24,20 @@ from omegaconf import DictConfig, OmegaConf
 from manibot.utils.task_utils import register_sim_modules, resolve, sim_controller_config
 
 
+def _set_nut_yaw(env, yaw):
+    """SquareNut 의 yaw 를 지정한다 (free joint 라 qpos 로 직접 쓴다).
+
+    **왜**: 배치 초기화가 yaw 를 360° 균등 무작위로 준다. 50개를 무작위로 뽑으면 원 위에
+    구멍이 생겨(최대 빈 구간 기댓값 약 360*ln(50)/50 = 28°) 그 구간의 파지 자세를 못 배운다.
+    격자로 깔면 같은 50개로 간격이 7.2° 가 된다 — 개수를 안 늘리고 커버리지를 4배 촘촘하게.
+    ⚠ 위치(x,y)는 건드리지 않는다. 물체 간 겹침을 배치 초기화가 이미 피해 놨기 때문이다.
+    """
+    m = env.sim.model
+    adr = m.jnt_qposadr[m.joint_name2id("SquareNut_joint0")]
+    env.sim.data.qpos[adr + 3:adr + 7] = [np.cos(yaw / 2), 0.0, 0.0, np.sin(yaw / 2)]  # (w,x,y,z)
+    env.sim.forward()
+
+
 def _kw(node):
     """OmegaConf 노드 -> dict. null 이면 빈 dict."""
     return OmegaConf.to_container(node, resolve=True) if node is not None else {}
@@ -67,6 +81,9 @@ def collect(cfg: DictConfig):
         while kept < cfg.n_demos:
             tried += 1
             env.reset()
+            if cfg.yaw_grid:
+                # kept 로 색인한다 — 실패해 버려도 같은 격자점을 다시 시도해 커버리지가 정확해진다
+                _set_nut_yaw(env, -np.pi + 2 * np.pi * (kept + 0.5) / cfg.n_demos)
             ex = Expert(env)
             # 시뮬레이터 예행 동작 — **기록 전에** 한다. 프로세스 안에서 첫 파지·당기기만
             # 결과가 다르다(서랍 0.08cm vs 이후 11.84cm, 결정론적) [실측 2026-09-06].
@@ -90,7 +107,10 @@ def collect(cfg: DictConfig):
                     break
             ok = bool(env._check_success())
             if not ok and not cfg.keep_failures:
-                print(f"  [{tried:3d}] 실패 — 버림 ({dict(env.progress)})")
+                # progress 는 우리가 만든 env 만 갖고 있다 (robomimic 기본 env 엔 없다).
+                prog = dict(getattr(env, "progress", {}))
+                print(f"  [{tried:3d}] 실패 — 버림 (마지막 구간 {ex.stage}"
+                      + (f" · {prog}" if prog else "") + ")")
                 continue
             d = grp.create_group(f"demo_{kept}")
             d.create_dataset("actions", data=np.asarray(acts, dtype=np.float32))
