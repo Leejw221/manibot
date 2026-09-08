@@ -7,11 +7,14 @@ checkpoint_path: ???
 n_episodes: 10
 # 한 에피소드 최대 스텝. 개입하며 고치다 보면 길어질 수 있어 넉넉히 준다.
 max_steps: 1200
-# 개입 시작 직전 몇 프레임을 c=0(실패로 이어진 행동)으로 재라벨할지.
-# APO 부록 B: "the last 10 actions before human intervention".
-preintv_k: 10
-# null 이면 task.hdf5_path 옆에 *_intervention.hdf5 로 쓴다.
-out_path: null
+# 저장은 **실물과 같은 LeRobotDataset**. 학습은 scripts/convert.py 로 zarr 화해 읽는다.
+repo_id: ???
+# LeRobot 은 프레임마다 자연어 task 를 요구한다.
+single_task: "put the square nut on the peg"
+# null 이면 LeRobot 기본 위치(~/.cache/huggingface/lerobot/<repo_id>).
+root: null
+# ⚠ APO 의 c=0(개입 직전 K 프레임)은 여기서 만들지 않는다 —
+#    학습 직전에 utils/intervention_labels.relabel_preintv(mode, k) 로 만든다.
 use_ema: true
 # 실시간 창. Wayland 라 pynput 전역 캡처가 안 되므로 **이 창이 조작면**이다 —
 # 창에 포커스를 두고 i/n/r/s/q 를 누른다.
@@ -19,6 +22,11 @@ view: true
 view_res: 384
 # 사람이 보고 반응할 수 있게 실시간으로 늦춘다. 0 이면 페이싱 없음(무인 테스트용).
 control_fps: 20
-# 지금 청크를 재생하는 동안 다음 청크를 계산한다. 끊김이 사라진다.
-# ⚠ 다음 청크가 한 청크 전 관측으로 계산되므로 배포 지연이 생긴다(실물엔 원래 있다).
+# 재생 중에 다음 청크를 계산한다 — 실물에는 추론 지연이 원래 있으므로 시뮬도 같게 둔다.
+# 지연은 청크를 **절대 스텝에 앵커**해 흡수한다(늦게 온 청크는 앞부분이 버려질 뿐이다).
 async_infer: true
+# 청크 합치기 — 실물(`manipulation_pipeline`)과 같은 이름·기본값을 쓴다.
+#   overwrite         마지막 청크만 쓴다
+#   temporal_ensemble 겹치는 청크들을 ACT 식 지수가중 평균 (실물 기본값)
+merger: temporal_ensemble
+te_coeff: 0.01

@@ -4,34 +4,43 @@ APO Algorithm 1 의 `Deployment(pi_theta, D_h)` 에 해당한다.  base policy �
 실패로 가는 상황을 사람이 보고 `i` 로 개입을 켠다.  교정 행동은 전문가(`sim.expert`)가
 현재 상태에서 이어서 낸다 — VR 텔레오퍼가 없어도 되고 시드를 붙일 수 있다.
 
-**라벨은 APO 원문 규약을 쓴다** [원문 직접, APO Alg.1 L15-16 · §3.1]:
-    c = 2   사람(여기선 스크립트) 이 교정한 프레임
-    c = 1   정책이 실행한 프레임
-    c = 0   각 개입 시작 **직전 K 프레임** — 실패로 이어진 행동.  재라벨로 만든다
-K 는 논문 부록 B 의 10 을 기본값으로 둔다 ("the last 10 actions before human intervention").
+**저장 형식과 라벨은 실물(`manipulation_pipeline/flare/scripts/rollout_intervention.py`)과
+같게 맞춘다** — 시뮬과 실물이 갈라지면 여기서 만든 것을 실물에 못 얹는다.
+    LeRobotDataset (parquet + mp4) + 프레임마다 `action_mode`
+    action_mode  0 = rollout(정책)  ·  1 = intervention(교정)
+APO 의 c=0(개입 직전 K 프레임)은 **학습 직전에** `utils/intervention_labels.relabel_preintv`
+로 만든다. 수집에 넣으면 K 를 바꿀 때마다 다시 수집해야 하고 실물 데이터와 형식이 갈린다.
 
 키 (`teleoperators/keyboard_trigger.py`, LeRobot 규약 + i):
     i = 개입 토글 · →/n = 다음 에피소드 · ←/r = 다시 · s = 저장 · ESC/q = 중단
 
 사용:
-    python -m manibot.scripts.collect_intervention task=square_scripted \\
-        checkpoint_path=outputs/.../checkpoints/step_0000050000 n_episodes=10
+    python -m manibot.scripts.collect_intervention task=square_ph50 \\
+        checkpoint_path=outputs/.../checkpoints/step_0000050000 n_episodes=50 \\
+        repo_id=Leejungwook/square-deploy-round1
+
+    # 학습용 zarr 로 (실물 데이터와 같은 경로).  ⚠ **--native 를 빼면 안 된다** —
+    # 기본값이 240x320 으로 키우는데 robosuite 는 84x84 로 렌더하고 정책은 76x76 으로 크롭한다
+    python src/manibot/scripts/convert.py --local-dir <root> --native -o data/<이름>_zarr
 """
 
+import json
 import logging
-import os
 import time
+from pathlib import Path
 from concurrent.futures import ThreadPoolExecutor
 
 import cv2
-import h5py
 import hydra
 import numpy as np
 import torch
 from omegaconf import DictConfig, OmegaConf
 
+from lerobot.datasets.lerobot_dataset import LeRobotDataset
+
 from manibot.policies.factory import make_policy
 from manibot.rollout import make_predict_fn
+from manibot.rollout.merger import make_merger
 from manibot.utils.checkpoints import load_ema_weights, load_model_weights
 from manibot.utils.dataset_utils import create_dataset_stats
 from manibot.utils.logger import setup_logging
@@ -39,7 +48,7 @@ from manibot.utils.task_utils import derive_task_meta, make_eval_env, resolve
 
 logger = logging.getLogger(__name__)
 
-C_PREINTV, C_POLICY, C_INTV = 0, 1, 2
+from manibot.utils.intervention_labels import LABEL_INTV, LABEL_ROLLOUT
 
 
 # cv2.waitKey 가 주는 코드 -> 우리 키 이름. Wayland 에서 영상 창이 곧 조작면이다.
@@ -88,20 +97,6 @@ def _raw(env):
     raise RuntimeError("robosuite env 를 못 찾았다")
 
 
-def relabel_preintv(modes, k):
-    """각 개입 시작 직전의 **정책 프레임** k 개를 c=0 으로 바꾼다 (APO §3.1 의 relabel).
-
-    개입 시작 = 이전이 개입이 아니고 지금이 개입인 지점. 정책 프레임(c=1)만 바꾼다 —
-    앞선 개입 구간(c=2)까지 덮으면 "실패로 이어진 행동" 이 아닌 것이 섞인다.
-    """
-    m = np.asarray(modes, dtype=np.int64).copy()
-    onsets = np.where((m == C_INTV) & (np.roll(m, 1) != C_INTV))[0]
-    for o in onsets[onsets > 0]:
-        w = m[max(0, o - k):o]
-        w[w == C_POLICY] = C_PREINTV
-    return m
-
-
 @hydra.main(config_path="../configs", config_name="collect_intervention", version_base="1.3")
 def collect(cfg: DictConfig):
     from manibot.teleoperators.keyboard_trigger import HELP, KeyboardTrigger
@@ -124,113 +119,155 @@ def collect(cfg: DictConfig):
     raw = _raw(env)
     Expert = resolve(cfg.task.sim.expert)
     low_dim = list(cfg.task.sim.state_from)
-    cams = list(OmegaConf.to_container(cfg.task.sim.cameras, resolve=True))
+    # robosuite 카메라 이름 -> 우리 관측 이름. LeRobot 특징 이름이 이 매핑을 그대로 쓴다
+    cams = OmegaConf.to_container(cfg.task.sim.cameras, resolve=True)
     predict_fn = make_predict_fn(policy, cfg, cfg.device, preprocessor=pre, postprocessor=post)
     obs_h, act_h = cfg.policy.obs_horizon, cfg.policy.action_horizon
 
     trig = KeyboardTrigger()
-    out = cfg.get("out_path") or cfg.task.hdf5_path.replace(".hdf5", "_intervention.hdf5")
-    os.makedirs(os.path.dirname(out), exist_ok=True)
-    logger.info(f"저장: {out}\n키: {HELP}")
+
+    # 실물과 같은 형식으로 쓴다 — LeRobotDataset(parquet + mp4).  학습은 `scripts/convert.py`
+    # 로 zarr 화해서 읽는다(실물 데이터가 타는 경로와 같다).  형상은 첫 관측에서 읽는다.
+    ro0 = raw._get_observations()
+    img_shape = list(np.asarray(ro0[f"{next(iter(cams))}_image"]).shape)
+    state_dim = int(sum(np.asarray(ro0[k]).size for k in low_dim))
+    features = {
+        **{name: {"dtype": "video", "shape": img_shape,
+                  "names": ["height", "width", "channel"]} for name in cams.values()},
+        "observation.state": {"dtype": "float32", "shape": [state_dim],
+                              "names": [f"s{i}" for i in range(state_dim)]},
+        "action": {"dtype": "float32", "shape": [int(raw.action_dim)],
+                   "names": [f"a{i}" for i in range(int(raw.action_dim))]},
+        # 실물과 같은 이름·형상.  0 = rollout · 1 = intervention
+        "action_mode": {"dtype": "int64", "shape": (1,), "names": None},
+    }
+    ds = LeRobotDataset.create(repo_id=cfg.repo_id, fps=int(cfg.task.fps), root=cfg.get("root"),
+                               features=features, robot_type=str(cfg.task.sim.robots),
+                               use_videos=True)
+    ep_success = []
+    logger.info(f"저장: {ds.root} (repo_id={cfg.repo_id})\n키: {HELP}")
 
     # ⭐ 비동기 추론 — **지금 청크를 재생하는 동안 다음 청크를 계산한다.**
-    # [실측 2026-09-08] 추론 223.7 ms · env.step x8 29 ms · 20Hz 재생 400 ms.
-    # 동기로 두면 400 ms 재생 + 224 ms 정지가 번갈아 나와 화면이 끊긴다(사용자 지적).
-    # 추론이 재생 시간보다 짧으므로 겹치면 완전히 가려진다.
-    # ⚠ 대가: 다음 청크가 **한 청크 전(0.4초) 관측**으로 계산된다 = 배포 지연이 생긴다.
-    #    실물 배포에는 원래 있는 지연이라 개입 데이터로는 오히려 현실적이지만,
-    #    eval.py(동기)와는 조건이 달라진다 — 성공률을 그쪽과 직접 비교하지 말 것.
+    # 실물에는 추론 시간만큼의 지연이 원래 있으므로 시뮬도 같은 구조로 둔다.
+    #
+    # ⚠ 지연은 **없애지 않고 흡수한다**: 청크를 관측 시각에 앵커해 `merger.get_action(step)`
+    # 로 꺼내므로, 늦게 온 청크는 앞부분이 버려질 뿐 실행되는 행동은 언제나 "지금 시각에
+    # 대한 예측"이다. [실측 2026-09-09] 앵커 없이 chunk[0] 을 지금 실행하던 예전 판은
+    # 20 에피소드 중 0 성공, 이 구조로 바꾸니 10 성공(동기 옛 구조는 6).
     pool = ThreadPoolExecutor(1) if cfg.async_infer else None
+    merger = make_merger(cfg.merger, te_coeff=cfg.te_coeff)
+    # 우리 정책(LeRobot 계열이 아닌 쪽)은 **관측 창의 첫 프레임**에 앵커한 전체 예측 구간을
+    # 돌려준다 (`utils/dataset_utils.py` 의 action_indices=range(pred_horizon)).
+    # LeRobot 계열은 generate_actions 가 이미 "지금"부터 잘라 준다 -> 0.
+    anchor_offset = 0 if hasattr(policy, "predict_action_chunk") else obs_h - 1
 
     from collections import deque
     kept = 0
-    with h5py.File(out, "w") as f:
-        grp = f.create_group("data")
-        while kept < cfg.n_episodes and not trig.events["stop_recording"]:
-            obs = env.reset()
-            trig.reset_episode()
-            hist = deque([obs] * obs_h, maxlen=obs_h)
-            t_next = time.perf_counter()
-            expert, future = None, None
-            traj = {k: [] for k in low_dim + [f"{c}_image" for c in cams]}
-            acts, modes = [], []
-            success = False
+    while kept < cfg.n_episodes and not trig.events["stop_recording"]:
+        obs = env.reset()
+        trig.reset_episode()
+        hist = deque([obs] * obs_h, maxlen=obs_h)
+        t_next = time.perf_counter()
+        expert, pending, last_action, step = None, None, None, 0
+        merger.clear()
+        frames = []
+        success = False
 
-            while len(acts) < cfg.max_steps:       # 청크가 아니라 **환경 스텝** 으로 센다
-                if trig.events["exit_early"] or trig.events["stop_recording"]:
-                    break
-                if trig.intervening:
-                    # 개입 켠 순간 **현재 상태에서** 다시 계획한다 (전문가가 재진입한다)
-                    if expert is None:
-                        # ⚠ 개입 교정에는 **다양성을 넣지 않는다**. 시연은 다양해야 정책이
-                        # 넓게 배우지만, 교정은 확실해야 한다 — 실패한 교정이 c=2 로 들어가면
-                        # "실패로 이어진 행동" 라벨이 오염된다.
-                        expert = Expert(raw, jitter=False)
-                    future = None                     # 개입 중에 만들어 둔 정책 청크는 버린다
-                    chunk, mode = [expert.act()], C_INTV
-                else:
-                    expert = None                     # 정책으로 돌아오면 남은 계획을 버린다
-                    if pool is None:
-                        chunk = predict_fn(list(hist))
-                    else:
-                        if future is None:            # 첫 청크만 기다린다
-                            future = pool.submit(predict_fn, list(hist))
-                        chunk = future.result()
-                        future = pool.submit(predict_fn, list(hist))   # 재생하며 다음 것을 계산
-                    chunk, mode = chunk[:act_h], C_POLICY
+        # ⭐ **실물(`manipulation_pipeline`)의 배포 루프와 같은 구조다.**
+        # 청크를 절대 스텝에 앵커해 `merger.get_action(step)` 으로 꺼낸다 — 그래야
+        # "지금 시각에 대한 예측"이 지금 실행된다. 예전 판은 t-8 관측으로 만든 chunk[0]
+        # 을 t 에 실행해서 **모든 행동이 8스텝 늦게 적용**됐고 성공률이 0/20 이었다.
+        while step < cfg.max_steps:
+            if trig.events["exit_early"] or trig.events["stop_recording"]:
+                break
 
-                for a in chunk:
-                    if cfg.view:
-                        trig.feed(_show(raw, cams, cfg.view_res,
-                                        expert.stage if expert else "-", kept, len(acts),
-                                        trig.intervening))
-                    if cfg.control_fps > 0:            # 사람이 보고 반응할 시간을 준다
-                        t_next = max(t_next, time.perf_counter()) + 1.0 / cfg.control_fps
-                    ro = raw._get_observations()
-                    for k in low_dim:
-                        traj[k].append(np.asarray(ro[k], dtype=np.float32).ravel())
-                    for c in cams:
-                        traj[f"{c}_image"].append(ro[f"{c}_image"][::-1])
-                    acts.append(np.asarray(a, dtype=np.float32))
-                    modes.append(mode)
-                    obs, _, _, _ = env.step(np.asarray(a))
-                    hist.append(obs)
-                    if raw._check_success():
-                        success = True
-                    if cfg.control_fps > 0:
-                        time.sleep(max(0.0, t_next - time.perf_counter()))
-                    if success or len(acts) >= cfg.max_steps \
-                            or trig.intervening != (mode == C_INTV):
-                        break                          # 토글이 바뀌면 남은 청크를 버린다
-                if success:
-                    break
+            # ① 끝난 추론을 앵커에 맞춰 제출한다. 늦게 끝났으면 청크 앞부분이 버려질 뿐이다
+            if pending is not None and pending[1].done():
+                t_obs, fut = pending
+                merger.submit(t_obs - anchor_offset, np.asarray(fut.result()))
+                pending = None
+            # ② 요청이 비어 있으면 즉시 다음 것을 던진다 (continuous inference)
+            if pending is None and pool is not None and not trig.intervening:
+                pending = (step, pool.submit(predict_fn, list(hist)))
 
-            m = relabel_preintv(modes, cfg.preintv_k)
-            n_i, n_p = int((m == C_INTV).sum()), int((m == C_PREINTV).sum())
-            if trig.events["rerecord_episode"]:
-                logger.info(f"  다시 찍기 — 버림 ({len(acts)} 프레임)")
-                continue
-            d = grp.create_group(f"demo_{kept}")
-            d.create_dataset("actions", data=np.asarray(acts, dtype=np.float32))
-            d.create_dataset("action_mode", data=m)
-            o = d.create_group("obs")
-            for k, v in traj.items():
-                arr = np.asarray(v)
-                o.create_dataset(k, data=arr, dtype=arr.dtype)
-            d.attrs["num_samples"] = len(acts)
-            d.attrs["success"] = success
-            kept += 1
-            logger.info(f"  demo_{kept-1}: {len(acts):4d} 프레임 · 개입 {n_i} · pre-intv {n_p} · "
-                        f"{'성공' if success else '실패'} · 누적 {kept}/{cfg.n_episodes}")
-        grp.attrs["total"] = int(sum(grp[k].attrs["num_samples"] for k in grp))
-        grp.attrs["env_args"] = OmegaConf.to_yaml(cfg.task.sim)
-        grp.attrs["preintv_k"] = int(cfg.preintv_k)
+            if trig.intervening:
+                # 개입 켠 순간 **현재 상태에서** 다시 계획한다 (전문가가 재진입한다)
+                if expert is None:
+                    # ⚠ 개입 교정에는 **다양성을 넣지 않는다**. 시연은 다양해야 정책이
+                    # 넓게 배우지만, 교정은 확실해야 한다 — 실패한 교정이 c=2 로 들어가면
+                    # "실패로 이어진 행동" 라벨이 오염된다.
+                    expert = Expert(raw, jitter=False)
+                merger.clear()                     # 정책이 만들어 둔 예측은 버린다
+                last_action = None
+                action, mode = expert.act(), LABEL_INTV
+            else:
+                if expert is not None:             # 정책으로 돌아왔다
+                    expert = None
+                    merger.clear()
+                    last_action = None
+                action = merger.get_action(step)
+                if action is None and pending is not None:
+                    # 콜드 스타트 — 첫 청크는 기다린다 (실물은 자세를 유지하며 기다린다)
+                    t_obs, fut = pending
+                    merger.submit(t_obs - anchor_offset, np.asarray(fut.result()))
+                    pending = None
+                    action = merger.get_action(step)
+                if action is None:
+                    action = last_action           # STALL — 마지막 행동을 유지한다
+                    if action is None:
+                        continue
+                last_action = action
+                mode = LABEL_ROLLOUT
+
+            if cfg.view:
+                trig.feed(_show(raw, cams, cfg.view_res,
+                                expert.stage if expert else "-", kept, step,
+                                trig.intervening))
+            if cfg.control_fps > 0:                # 사람이 보고 반응할 시간을 준다
+                t_next = max(t_next, time.perf_counter()) + 1.0 / cfg.control_fps
+            ro = raw._get_observations()
+            frames.append({
+                **{name: ro[f"{c}_image"][::-1] for c, name in cams.items()},
+                "observation.state": np.concatenate(
+                    [np.asarray(ro[k], dtype=np.float32).ravel() for k in low_dim]),
+                "action": np.asarray(action, dtype=np.float32),
+                "action_mode": np.array([mode], dtype=np.int64),
+                "task": cfg.single_task,
+            })
+            obs, _, _, _ = env.step(np.asarray(action))
+            hist.append(obs)
+            step += 1
+            if raw._check_success():
+                success = True
+            if cfg.control_fps > 0:
+                time.sleep(max(0.0, t_next - time.perf_counter()))
+            if success:
+                break
+
+        if trig.events["rerecord_episode"] or not frames:
+            logger.info(f"  다시 찍기 — 버림 ({len(frames)} 프레임)")
+            continue
+        n_i = sum(1 for f in frames if int(f["action_mode"][0]) == LABEL_INTV)
+        for fr in frames:
+            ds.add_frame(fr)
+        ds.save_episode()
+        ep_success.append(bool(success))
+        kept += 1
+        logger.info(f"  ep{kept-1}: {len(frames):4d} 프레임 · 개입 {n_i} · "
+                    f"{'성공' if success else '실패'} · 누적 {kept}/{cfg.n_episodes}")
+
+# ⚠ finalize() 를 빠뜨리면 **잘린 parquet 이 남는다** — save_episode 가 백그라운드로
+# 쓰기 때문이다 (2026-09-08 실측: 5,651,594 -> 5,483,546 바이트로 잘렸다).
+    ds.finalize()
+    # 성공 여부는 시뮬에만 있는 정보라 LeRobot 스키마를 건드리지 않고 옆에 둔다.
+    (Path(ds.root) / "episode_success.json").write_text(json.dumps(ep_success))
     if pool is not None:
         pool.shutdown(wait=False, cancel_futures=True)
     trig.stop()
     if cfg.view:
         cv2.destroyAllWindows()
-    logger.info(f"수집 완료: {kept} 에피소드 -> {out}")
+    logger.info(f"수집 완료: {kept} 에피소드 · 성공 {sum(ep_success)}/{len(ep_success)} "
+                f"-> {ds.root}")
 
 
 def main():
