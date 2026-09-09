@@ -43,7 +43,9 @@ def open_or_resume(repo_id, root, fps, features, robot_type, use_videos=True):
     """
     from lerobot.datasets.lerobot_dataset import LeRobotDataset
 
-    if root and Path(root).exists():
+    # ⚠ 폴더가 있다는 것만으로 판단하면 안 된다 — 로그가 먼저 들어가 폴더만 생겨 있을 수 있다.
+    # 데이터셋이 실제로 있는지는 meta/info.json 으로 본다.
+    if root and (Path(root) / "meta" / "info.json").exists():
         logger.info(f"이어받기: {root}")
         return LeRobotDataset.resume(repo_id=repo_id, root=root)
     return LeRobotDataset.create(repo_id=repo_id, fps=int(fps), root=root, features=features,

@@ -26,6 +26,7 @@ APO 의 c=0(개입 직전 K 프레임)은 **학습 직전에** `utils/interventi
 
 import logging
 import os
+from pathlib import Path
 from concurrent.futures import ThreadPoolExecutor
 
 import hydra
@@ -82,7 +83,14 @@ def _raw(env):
 def collect(cfg: DictConfig):
     from manibot.teleoperators.keyboard_trigger import HELP, KeyboardTrigger
 
-    setup_logging(save_dir=cfg.log_dir, debug=cfg.debug)
+    # 로그는 데이터 폴더 **옆에** 둔다 (`<root>_collect.log`). 기본 output_dir 을 쓰면 데이터와
+    # 무관한 세션 폴더가 생기고, 폴더 **안**에 두면 LeRobotDataset.create 가 "이미 있다"로 막힌다.
+    _root = cfg.get("root")
+    if _root:
+        _r = Path(_root)
+        setup_logging(save_dir=str(_r.parent), log_file=f"{_r.name}_collect.log", debug=cfg.debug)
+    else:
+        setup_logging(save_dir=cfg.log_dir, log_file="collect.log", debug=cfg.debug)
     np.random.seed(cfg.seed)
     torch.manual_seed(cfg.seed)
 

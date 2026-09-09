@@ -110,7 +110,18 @@ base policy 가 학습한 시연의 프레임 수에 곱해진다. `n_episodes` 
 python -m manibot.scripts.eval ... collect.enable=true collect.repo_id=... collect.root=...
 ```
 
-### 3. 배포·평가 규약
+### 3. 결과가 쌓이는 곳
+
+```
+outputs/<task>/<policy>/<학습 세션>/
+    checkpoints/step_XXXXXXXX
+    eval/step_XXXXXXXX_<시각>/eval_result.json · eval.log · videos/
+```
+평가 결과는 **평가한 체크포인트 아래**에 쌓인다 — 같은 체크포인트를 여러 번 재면 나란히
+남고, 어느 성적인지 경로만 봐도 안다. 배포 수집은 데이터를 `root` 에, 로그를 그 옆
+`<root>_collect.log` 에 둔다. 세 경우 모두 빈 세션 폴더를 만들지 않는다.
+
+### 4. 배포·평가 규약
 
 시뮬과 실물이 갈라지지 않게 세 경로(`eval` · `train` 의 온라인 평가 · `collect_intervention`)가
 같은 코드를 쓴다.

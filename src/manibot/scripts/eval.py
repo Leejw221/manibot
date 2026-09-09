@@ -9,6 +9,7 @@ training come from the same code.
 import json
 import logging
 import random
+from datetime import datetime
 from pathlib import Path
 
 import hydra
@@ -80,9 +81,23 @@ class _DeployCollector:
         logger.info(f"배포 데이터 {len(self.ep_success)} 에피소드 -> {self.ds.root}")
 
 
+def _eval_dir(cfg, checkpoint: Path) -> Path:
+    """평가 결과를 **평가한 체크포인트 옆에** 둔다.
+
+        <학습 세션>/eval/<step 이름>_<시각>/
+
+    기본 output_dir 을 쓰면 eval 을 돌릴 때마다 체크포인트와 무관한 새 세션 폴더가 생겨서,
+    어느 체크포인트의 성적인지 json 을 열어야 알 수 있다. 체크포인트가
+    `<세션>/checkpoints/<step>` 모양이 아니면 기본 경로로 떨어진다.
+    """
+    ck = Path(checkpoint)
+    if ck.parent.name == "checkpoints":
+        return ck.parent.parent / "eval" / f"{ck.name}_{datetime.now():%Y%m%d_%H%M%S}"
+    return Path(cfg.eval_dir)
+
+
 @hydra.main(config_path="../configs", config_name="default_policy", version_base="1.3")
 def evaluate(cfg: DictConfig):
-    setup_logging(save_dir=cfg.log_dir, debug=cfg.debug)
     if not is_sim_task(cfg.task):
         raise ValueError(f"task '{cfg.task.name}' 은 실물이라 시뮬 rollout 평가를 할 수 없다.")
 
@@ -107,7 +122,10 @@ def evaluate(cfg: DictConfig):
     # 학습 중 검증이 EMA 를 쓰므로 여기서도 맞춘다 — 안 맞추면 같은 체크포인트인데
     # 학습 로그의 수치와 여기 수치가 갈린다 (checkpoints.load_ema_weights 참고).
     used_ema = cfg.get("use_ema", True) and load_ema_weights(policy, checkpoint, cfg.device)
+    eval_dir = _eval_dir(cfg, checkpoint)
+    setup_logging(save_dir=str(eval_dir), log_file="eval.log", debug=cfg.debug)
     logger.info(f"Loaded checkpoint: {checkpoint} (EMA {'적용' if used_ema else '없음'})")
+    logger.info(f"결과를 {eval_dir} 에 쓴다")
 
     policy.eval()
     env = make_eval_env(cfg.task)
@@ -138,7 +156,7 @@ def evaluate(cfg: DictConfig):
             action_horizon=cfg.policy.action_horizon,
             max_steps=cfg.task.sim.max_steps,
             fps=cfg.task.fps,
-            videos_dir=Path(cfg.eval_dir) / "videos",
+            videos_dir=eval_dir / "videos",
             max_episodes_rendered=cfg.val.num_viz_videos,
             video_key=image_keys[0] if image_keys else None,
             # ⭐ 배포·실물과 같은 조건으로 잰다 (`utils/eval.py:rollout_episode` 참조)
@@ -154,7 +172,7 @@ def evaluate(cfg: DictConfig):
         env.close()
 
     logger.info(f"Eval metrics: {info['aggregated']}")
-    out = Path(cfg.eval_dir) / "eval_result.json"
+    out = eval_dir / "eval_result.json"
     out.parent.mkdir(parents=True, exist_ok=True)
     json.dump({"checkpoint": str(checkpoint), "config": OmegaConf.to_container(cfg.task, resolve=True),
                **info}, open(out, "w"), indent=2)
