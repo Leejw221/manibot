@@ -26,6 +26,7 @@ APO 의 c=0(개입 직전 K 프레임)은 **학습 직전에** `utils/interventi
 
 import json
 import logging
+import os
 import time
 from pathlib import Path
 from concurrent.futures import ThreadPoolExecutor
@@ -83,6 +84,22 @@ def _show(raw, cams, res, stage, ep, step, intervening):
     if name is not None:
         return name
     return chr(k) if 32 < k < 127 else None
+
+
+def _demo_frame_count(cfg):
+    """base policy 가 학습한 시연 데이터의 총 프레임 수 — 라운드 목표의 기준이다.
+
+    `mani_sim/scripts/collect.py:_demo_frame_count` 와 같은 개념이고, 실물
+    `rollout_intervention.py` 의 계산과도 같다. 학습에 실제로 쓰인 zarr 를 먼저 보고,
+    없으면 원본 hdf5 로 떨어진다.
+    """
+    root = cfg.task.get("dataset_root")
+    if root and os.path.exists(root):
+        import zarr
+        return int(zarr.open(root, mode="r")["data"]["action"].shape[0])
+    import h5py
+    with h5py.File(cfg.task.hdf5_path, "r") as f:
+        return int(sum(f["data"][k].attrs["num_samples"] for k in f["data"]))
 
 
 def _raw(env):
@@ -162,8 +179,23 @@ def collect(cfg: DictConfig):
 
     ds = _open()
     succ_path = Path(ds.root) / "episode_success.json"
+
+    # ⭐ **라운드 크기는 에피소드가 아니라 프레임으로 정한다** — SIRIUS/APO 두 조건에
+    # 같은 데이터량을 주려고 정한 규약이다 [mani_sim/scripts/collect.py:341,
+    # EXP-10 round1 실측: ratio 1.5 · demo 7,561 프레임 -> 목표 11,341 -> 45 에피소드
+    # 11,571 프레임].  목표를 넘는 분량은 에피소드를 자르지 않으니 자연히 생긴다.
+    # 합친 데이터셋에서 demo 가 차지하는 비율 = 1/(1+ratio).
+    round_threshold = None
+    if cfg.get("round_size_ratio"):
+        demo_frames = _demo_frame_count(cfg)
+        round_threshold = int(demo_frames * cfg.round_size_ratio)
+        logger.info(f"[라운드 목표] {round_threshold:,} 프레임 "
+                    f"({cfg.round_size_ratio}x {demo_frames:,} demo 프레임 -> "
+                    f"합친 데이터셋 demo 비율 {1.0 / (1.0 + cfg.round_size_ratio):.0%})")
     ep_success = json.loads(succ_path.read_text()) if succ_path.exists() else []
     kept0 = len(ep_success)
+    round_frames = int(getattr(ds, "num_frames", 0) or 0)     # 이어받은 분량부터 센다
+    intv_frames = 0
     logger.info(f"저장: {ds.root} (repo_id={cfg.repo_id})\n키: {HELP}")
 
     # ⭐ 비동기 추론 — **지금 청크를 재생하는 동안 다음 청크를 계산한다.**
@@ -182,7 +214,14 @@ def collect(cfg: DictConfig):
 
     from collections import deque
     kept = 0
-    while kept0 + kept < cfg.n_episodes and not trig.events["stop_recording"]:
+    while not trig.events["stop_recording"]:
+        if round_threshold is not None and round_frames >= round_threshold:
+            logger.info(f"[라운드 종료] 목표 프레임 달성 "
+                        f"({round_frames:,} >= {round_threshold:,})")
+            break
+        if kept0 + kept >= cfg.n_episodes:      # 안전 상한
+            logger.info(f"[중단] 에피소드 상한 {cfg.n_episodes} 도달")
+            break
         obs = env.reset()
         trig.reset_episode()
         hist = deque([obs] * obs_h, maxlen=obs_h)
@@ -272,8 +311,13 @@ def collect(cfg: DictConfig):
         ds.save_episode()
         ep_success.append(bool(success))
         kept += 1
+        round_frames += len(frames)
+        intv_frames += n_i
+        prog = (f"{round_frames:,}/{round_threshold:,} 프레임"
+                if round_threshold else f"{kept0+kept}/{cfg.n_episodes} 에피소드")
         logger.info(f"  ep{kept0+kept-1}: {len(frames):4d} 프레임 · 개입 {n_i} · "
-                    f"{'성공' if success else '실패'} · 누적 {kept0+kept}/{cfg.n_episodes}")
+                    f"{'성공' if success else '실패'} · 누적 {prog} "
+                    f"(개입 {intv_frames/max(round_frames,1):.0%})")
         if cfg.save_every > 0 and kept % cfg.save_every == 0:
             ds.finalize()                  # 여기까지는 죽어도 남는다
             # ⚠ 성공 목록도 **여기서만** 쓴다. 매 에피소드마다 쓰면 finalize 전에 죽었을 때

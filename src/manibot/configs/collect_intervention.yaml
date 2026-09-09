@@ -4,7 +4,11 @@ defaults:
 
 # 배포할 base policy. 반드시 지정한다.
 checkpoint_path: ???
-n_episodes: 10
+# ⚠ **안전 상한**이다. 라운드 크기는 round_size_ratio(프레임)로 정한다.
+n_episodes: 200
+# 라운드 목표 = demo 프레임 x 이 값.  1.5 는 SIRIUS/APO 두 조건에 같은 데이터량을 주려고
+# 정한 규약이다 (합친 데이터셋의 demo 비율 40%).  null 이면 n_episodes 로만 센다.
+round_size_ratio: 1.5
 # 한 에피소드 최대 스텝. 개입하며 고치다 보면 길어질 수 있어 넉넉히 준다.
 max_steps: 1200
 # 저장은 **실물과 같은 LeRobotDataset**. 학습은 scripts/convert.py 로 zarr 화해 읽는다.
