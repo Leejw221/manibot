@@ -116,10 +116,12 @@ def create_dataset(policy, cfg: DictConfig, episodes=None):
 
     logger.info(f"Creating dataset with repo_id={cfg.task.dataset_repo_id} and root={cfg.task.dataset_root}")
 
-    # 두 계열의 관측 창 규약이 다르다. 우리 이전 정책들은 창이 "지금"에서 시작하고
-    # (그래서 anchor_offset=obs_horizon-1 로 보정한다), LeRobot 은 창이 "지금"에서
-    # 끝나고 행동이 "지금"부터 시작한다(anchor_offset=0). obs_horizon=1 이면 둘이
-    # 같지만 늘리는 순간 갈라지므로 정책에게 물어본다.
+    # 두 계열의 창 규약이 다르므로 정책에게 물어본다. 우리 정책은 관측 [0..h-1] ·
+    # 행동 [0..Tp-1] 로 **같은 앵커**를 쓴다 = 행동 창이 관측 창의 시작에 붙는다
+    # (LeRobot 도 같다: observation_delta_indices=range(1-h,1) ·
+    #  action_delta_indices=range(1-h, 1-h+Tp)).  그래서 추론 때 첫 (h-1) 칸은 과거이고,
+    # **`rollout/policy_server.make_predict_fn` 이 그걸 잘라서** 청크가 "지금"부터
+    # 시작하게 만든다.  호출하는 쪽은 그 규약 하나만 안다.
     if hasattr(policy, "get_observation_indices"):
         obs_indices = policy.get_observation_indices()
         action_indices = policy.get_action_indices()

@@ -141,7 +141,6 @@ def evaluate(cfg: DictConfig):
             video_key=image_keys[0] if image_keys else None,
             # ⭐ 배포·실물과 같은 조건으로 잰다 (`utils/eval.py:rollout_episode` 참조)
             merger_name=cfg.eval_merger, te_coeff=cfg.eval_te_coeff,
-            anchor_offset=cfg.anchor_offset,
             async_infer=cfg.eval_async_infer,
             collector=collector, viewer=viewer,
         )

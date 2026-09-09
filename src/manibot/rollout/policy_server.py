@@ -35,13 +35,28 @@ def make_predict_fn(policy, cfg, device, preprocessor=None, postprocessor=None):
 
     Two policy families are supported. LeRobot policies normalize outside the
     module, through the processor pipeline built alongside them, and their
-    generate_actions already slices to n_action_steps starting at the current
-    observation. Our older policies normalize inside and return the full
-    prediction horizon — the caller's anchor_offset accounts for the difference.
+    generate_actions already slices to start at the current observation. Our
+    older policies normalize inside and return the **full** prediction horizon,
+    whose first (obs_horizon - 1) entries are actions for timesteps already past
+    (행동 창이 관측 창의 시작에 앵커돼 있다 — `policies/base_policy.get_action_indices`).
+
+    ⭐ **그 차이를 여기서 없앤다.** 잘라서 돌려주므로 호출하는 쪽은 "청크의 첫 칸이
+    지금"이라는 규약 하나만 안다 — 그래서 `TimedChunk(t_obs=지금 step, chunk)` 로 바로
+    붙일 수 있다. 예전에는 호출자마다 anchor_offset 을 config 로 들고 있었고, 두 스크립트에
+    같은 값을 맞춰 넣어야 해서 틀리면 조용히 한 스텝 밀렸다 (2026-09-09 에 그것 때문에 한참
+    헤맸다). LeRobot 이 modeling_diffusion.py:328-331 에서 하는 것과 같은 자르기다.
+
+    자를 양은 **정책이 선언한 창**에서 유도한다 — 하드코딩하지 않는다:
+        lead = (관측 창의 마지막 = "지금") - (행동 창의 시작)
+    우리 정책은 관측 [0..h-1] · 행동 [0..Tp-1] 이라 lead = h-1 이고, 창 규약을 바꾸는
+    정책이 생기면 그 정책이 선언한 값을 그대로 따라간다.
     """
     input_keys = list(cfg.task.image_keys) + [cfg.task.state_key]
     action_key = cfg.task.action_key
     lerobot_style = hasattr(policy, "predict_action_chunk")
+    lead = 0
+    if not lerobot_style and hasattr(policy, "get_observation_indices"):
+        lead = int(policy.get_observation_indices()[-1]) - int(policy.get_action_indices()[0])
 
     def predict_fn(obs_history):
         batch = {
@@ -61,7 +76,8 @@ def make_predict_fn(policy, cfg, device, preprocessor=None, postprocessor=None):
                 batch = policy.normalize_inputs(batch)
                 actions = policy.generate_actions(batch)
                 actions = policy.unnormalize_outputs({action_key: actions})[action_key]
-        return actions.squeeze(0).cpu().numpy()
+        a = actions.squeeze(0).cpu().numpy()
+        return a[lead:] if lead else a              # 첫 칸이 "지금"이 되게 과거분을 버린다
 
     return predict_fn
 

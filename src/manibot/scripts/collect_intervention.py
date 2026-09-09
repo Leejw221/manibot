@@ -209,8 +209,6 @@ def collect(cfg: DictConfig):
     # 20 에피소드 중 0 성공, 이 구조로 바꾸니 10 성공(동기 옛 구조는 6).
     pool = ThreadPoolExecutor(1) if cfg.async_infer else None
     merger = make_merger(cfg.merger, te_coeff=cfg.te_coeff)
-    # 청크의 첫 칸이 어느 시각의 행동인지 (config 의 anchor_offset 주석 참조).
-    anchor_offset = cfg.anchor_offset
 
     from collections import deque
     kept = 0
@@ -242,7 +240,7 @@ def collect(cfg: DictConfig):
             # ① 끝난 추론을 앵커에 맞춰 제출한다. 늦게 끝났으면 청크 앞부분이 버려질 뿐이다
             if pending is not None and pending[1].done():
                 t_obs, fut = pending
-                merger.submit(t_obs - anchor_offset, np.asarray(fut.result()))
+                merger.submit(t_obs, np.asarray(fut.result()))
                 pending = None
             # ② 요청이 비어 있으면 즉시 다음 것을 던진다 (continuous inference)
             if pending is None and pool is not None and not trig.intervening:
@@ -267,7 +265,7 @@ def collect(cfg: DictConfig):
                 if action is None and pending is not None:
                     # 콜드 스타트 — 첫 청크는 기다린다 (실물은 자세를 유지하며 기다린다)
                     t_obs, fut = pending
-                    merger.submit(t_obs - anchor_offset, np.asarray(fut.result()))
+                    merger.submit(t_obs, np.asarray(fut.result()))
                     pending = None
                     action = merger.get_action(step)
                 if action is None:

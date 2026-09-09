@@ -61,7 +61,7 @@ def _progress(env):
 
 
 def rollout_episode(env, predict_fn, obs_horizon, action_horizon, max_steps, video_key=None,
-                    merger_name="temporal_ensemble", te_coeff=0.01, anchor_offset=0,
+                    merger_name="temporal_ensemble", te_coeff=0.01,
                     async_infer=True, recorder=None, viewer=None, ep_label=""):
     """Run one episode. Returns (success, sum_reward, max_reward, steps, frames, progress).
 
@@ -97,11 +97,11 @@ def rollout_episode(env, predict_fn, obs_horizon, action_horizon, max_steps, vid
             if pool is None:
                 # 동기: 이번 스텝의 예측이 없을 때만 새로 뽑는다 (추론 횟수는 예전과 같다)
                 if merger.get_action(steps) is None:
-                    merger.submit(steps - anchor_offset,
+                    merger.submit(steps,
                                   np.asarray(predict_fn(list(history))))
             else:
                 if pending is not None and pending[1].done():
-                    merger.submit(pending[0] - anchor_offset,
+                    merger.submit(pending[0],
                                   np.asarray(pending[1].result()))
                     pending = None
                 if pending is None:            # 제출하는 즉시 다음 요청 (continuous inference)
@@ -110,7 +110,7 @@ def rollout_episode(env, predict_fn, obs_horizon, action_horizon, max_steps, vid
             action = merger.get_action(steps)
             if action is None and pending is not None:
                 # 콜드 스타트 — 첫 청크는 기다린다
-                merger.submit(pending[0] - anchor_offset, np.asarray(pending[1].result()))
+                merger.submit(pending[0], np.asarray(pending[1].result()))
                 pending = None
                 action = merger.get_action(steps)
             if action is None:
@@ -154,7 +154,6 @@ def eval_policy(
     video_key: str | None = None,
     merger_name: str = "temporal_ensemble",
     te_coeff: float = 0.01,
-    anchor_offset: int = 0,
     async_infer: bool = True,
     collector=None,
     viewer=None,
@@ -174,8 +173,7 @@ def eval_policy(
         success, sum_r, max_r, steps, frames, prog = rollout_episode(
             env, predict_fn, obs_horizon, action_horizon, max_steps,
             video_key=video_key if record else None,
-            merger_name=merger_name, te_coeff=te_coeff, anchor_offset=anchor_offset,
-            async_infer=async_infer,
+            merger_name=merger_name, te_coeff=te_coeff, async_infer=async_infer,
             recorder=collector.record if collector is not None else None,
             viewer=viewer, ep_label=f"ep{ep} ",
         )
