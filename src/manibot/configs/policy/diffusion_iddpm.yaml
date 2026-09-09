@@ -1,0 +1,18 @@
+# @package _global_
+
+# iDDPM 의 학습된 분산 + L_hybrid 를 켠 팔.  나머지는 diffusion.yaml 과 같아야 한다
+# (분산 하나만 다르게 해서 비교하는 것이 이 실험의 전부다).
+defaults:
+  - diffusion
+  - _self_
+
+policy:
+  name: diffusion
+  learned_variance: true
+  vlb_weight: 0.001        # L_hybrid = L_simple + λ·L_vlb.  iDDPM 논문값
+
+  noise_scheduler:
+    # ⚠ 학습된 분산은 DDPM 샘플링에서만 쓰인다 — DDIM(eta=0)은 역과정이 결정론적이라
+    #    분산이 들어갈 자리가 없다.
+    type: DDPM
+    num_inference_steps: 100

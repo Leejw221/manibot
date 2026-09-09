@@ -197,7 +197,12 @@ def _lerobot_diffusion(cfg, dataset_meta, stats):
         k: {m: torch.as_tensor(v, dtype=torch.float32) for m, v in s.items()}
         for k, s in stats.items()
     }
-    policy = DiffusionPolicy(lr_cfg)
+    # iDDPM 팔 — 학습된 분산 + L_hybrid.  나머지 설정은 전부 동일하다
+    if pol.get("learned_variance", False):
+        from manibot.policies.iddpm.iddpm_policy import IDDPMPolicy
+        policy = IDDPMPolicy(lr_cfg, vlb_weight=pol.get("vlb_weight", 0.001))
+    else:
+        policy = DiffusionPolicy(lr_cfg)
     pre, post = make_diffusion_pre_post_processors(lr_cfg, tensor_stats)
     return policy, pre, post
 
