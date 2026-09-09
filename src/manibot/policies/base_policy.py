@@ -49,9 +49,26 @@ class BasePolicy(nn.Module, PyTorchModelHubMixin):
         ) if self.config.use_ema else None
 
     def get_action_indices(self):
+        """행동 창 — 관측 창과 **같은 앵커**에서 pred_horizon 개.
+
+        LeRobot·Diffusion Policy 원문 규약이다. 아래 obs 인덱스와 짝으로 봐야 한다:
+        관측 [-(h-1) .. 0] · 행동 [-(h-1) .. -(h-1)+Tp-1] 이 원문이고, 여기서는 두 창을
+        같은 오프셋만큼 옮겨 관측 [0..h-1] · 행동 [0..Tp-1] 로 쓴다 — **상대 관계가 같다.**
+        추론에서 chunk[h-1] 이 "지금"의 행동이고, 그래서 anchor_offset = h-1 이다
+        (LeRobot 은 generate_actions 안에서 `actions[:, n_obs_steps-1:]` 로 같은 일을 한다,
+        modeling_diffusion.py:328-331).
+        """
         return list(range(self.pred_horizon))
 
     def get_observation_indices(self):
+        """관측 창 — 앵커에서 h 개.
+
+        ⚠ 2026-09-09 에 이걸 [-(h-1)..0] 으로 바꿔 "행동이 지금부터 시작"하게 만들려다
+        되돌렸다. LeRobot 기본값(configuration_diffusion.py:251-256)이
+            observation_delta_indices = range(1-h, 1)
+            action_delta_indices      = range(1-h, 1-h+Tp)
+        라 **행동 창이 관측 창의 시작에 앵커돼 있다** — 우리 규약과 같다. 원문이 그쪽이다.
+        """
         return list(range(self.obs_horizon))
 
     def reset(self):

@@ -69,6 +69,12 @@ view: false
 view_res: 384
 view_fps: 20
 
+# 청크의 첫 칸(chunk[0])이 관측 시각보다 몇 스텝 **과거**의 행동인가.
+# 우리 정책은 행동 창이 관측 창의 시작에 앵커돼 있으므로 obs_horizon-1 = 1 이다
+# (LeRobot 도 같은 규약이고 generate_actions 안에서 actions[:, n_obs_steps-1:] 로 자른다).
+# 0 은 이미 잘라서 주는 정책(LeRobot 계열 래퍼)일 때만. 틀리면 모든 행동이 그만큼 밀린다.
+anchor_offset: 1
+
 eval_merger: temporal_ensemble
 eval_te_coeff: 0.01
 eval_async_infer: true

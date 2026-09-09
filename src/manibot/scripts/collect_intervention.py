@@ -209,10 +209,8 @@ def collect(cfg: DictConfig):
     # 20 에피소드 중 0 성공, 이 구조로 바꾸니 10 성공(동기 옛 구조는 6).
     pool = ThreadPoolExecutor(1) if cfg.async_infer else None
     merger = make_merger(cfg.merger, te_coeff=cfg.te_coeff)
-    # 우리 정책(LeRobot 계열이 아닌 쪽)은 **관측 창의 첫 프레임**에 앵커한 전체 예측 구간을
-    # 돌려준다 (`utils/dataset_utils.py` 의 action_indices=range(pred_horizon)).
-    # LeRobot 계열은 generate_actions 가 이미 "지금"부터 잘라 준다 -> 0.
-    anchor_offset = 0 if hasattr(policy, "predict_action_chunk") else obs_h - 1
+    # 청크의 첫 칸이 어느 시각의 행동인지 (config 의 anchor_offset 주석 참조).
+    anchor_offset = cfg.anchor_offset
 
     from collections import deque
     kept = 0
