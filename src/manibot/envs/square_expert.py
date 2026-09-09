@@ -48,6 +48,11 @@ YAW_TOL = np.radians(3.0)   # 삽입 전에 맞춰야 할 **너트 안쪽 사각
 ENGAGE = 0.04       # 봉 꼭대기 아래로 **너트 두께(0.02)의 2배**만 내려가면 물린 것으로 본다.
                     # 거기서 놓으면 나머지는 중력이 내려준다 — 끝까지 내릴 필요가 없다
 RETREAT = 0.13      # 놓은 뒤 물러나는 높이 [m] (4.24 cm 이상이어야 성공 판정이 난다)
+SIDE_TOL = np.sin(np.radians(15.0))   # 금지 배치 판정의 여유.  `u.(봉-베이스) < -SIDE_TOL`
+                    # 일 때만 기각한다.  여유 없이 `< 0` 로 자르면 **거의 수직인 배치**(u.w =
+                    # -0.13, 각으로 97°)까지 걸러 90° 를 더 돌게 된다 [실측 2026-09-09:
+                    # 37 시행 중 5건이 31° 로 끝날 것을 139° 돌았다].  그건 "너트가 베이스
+                    # 쪽" 이라 부를 배치가 아니다 — 정말 베이스를 향한 것은 u.w = -0.99 다
 J7_LIMIT = np.radians(164.0)   # 손목 마지막 관절(joint7) 을 여기까지만 쓴다. 범위는 ±166° 다.
                     # ⚠ 여유를 크게 두면 안 된다 — 160° 로 뒀더니 |j7+d| = 162.5° 인 **39° 회전**을
                     # 잘라내고 129° 후보를 -231° 로 감아 돌았다 (사용자 관찰 2026-09-08).
@@ -228,8 +233,8 @@ class SquareExpert:
             d0 = (k * np.pi / 2 - phi + np.pi) % (2 * np.pi) - np.pi
             c, sn = np.cos(d0), np.sin(d0)
             u_end = np.array([c * u[0] - sn * u[1], sn * u[0] + c * u[1]])
-            if float(u_end @ want) <= 0:
-                continue
+            if float(u_end @ want) < -SIDE_TOL * np.linalg.norm(want):
+                continue                      # 명백히 베이스 쪽일 때만 뺀다 (SIDE_TOL 참조)
             for d in (d0, d0 - 2 * np.pi, d0 + 2 * np.pi):
                 if abs(j7 + d) < J7_LIMIT and (best is None or abs(d) < abs(best)):
                     best = d
@@ -358,6 +363,10 @@ class SquareExpert:
         # ④ 들면서 yaw 정렬을 **한 동작으로**. 궤적이 매끄러워 회전을 겹쳐도 헤매지 않는다.
         #    어느 90° 배수로 갈지는 _choose_yaw 가 금지 배치를 빼고 고른다.
         d = self._choose_yaw()
+        # ⭐ **고른 목표를 절대각으로 잡아둔다.** 아래 정렬 폐루프가 "가장 가까운 90° 배수"
+        # 를 쓰면, 드는 동안 목표까지 다 못 돌았을 때 **다른 배수로 끌려가** _choose_yaw 의
+        # 선택(금지 배치 회피)이 무효가 된다 [실측 2026-09-09: 이송 시점에 u·ŵ 가 -0.45 까지].
+        target_yaw = _yaw(self._nut()[1]) + d
         p, Rc = self._eef()
         R_hold = rot_z(d) @ Rc
         # 잡은 뒤엔 너트가 그리퍼에 고정이라 eef-너트 오프셋이 상수다 — 지금 재두고 계속 쓴다
@@ -390,10 +399,9 @@ class SquareExpert:
         # 봉 사각형이 맞아야 들어간다. yaw 는 지금까지 파지 직후 한 번만 맞춰 놓았을 뿐이라,
         # 이송 중 너트가 그리퍼 안에서 돌면 고칠 방법이 아예 없었다 — 여기서 닫는다.
         def _yaw_err():
-            """너트 yaw 가 90° 배수에서 얼마나 벗어났나 [rad, -45°~45°]. 봉 yaw 는 0 이다."""
+            """**고른 목표각** 에서 얼마나 벗어났나 [rad]. 가장 가까운 배수가 아니다."""
             _, Rn = self._nut()
-            e = _yaw(Rn) % (np.pi / 2)
-            return e - np.pi / 2 if e > np.pi / 4 else e
+            return (_yaw(Rn) - target_yaw + np.pi) % (2 * np.pi) - np.pi
 
         def _aligned():
             return (np.linalg.norm(self._nut()[0][:2] - peg[:2]) < XY_TOL
