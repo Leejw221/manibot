@@ -308,7 +308,13 @@ def collect(cfg: DictConfig):
         n_i = sum(1 for f in frames if int(f["action_mode"][0]) == LABEL_INTV)
         for fr in frames:
             ds.add_frame(fr)
-        ds.save_episode()
+        # ⚠ parallel_encoding 기본값(True)은 카메라마다 **ProcessPoolExecutor 를 띄운다**
+        # (`lerobot/datasets/dataset_writer.py:344`). 그 워커가 두 번 죽어 수집이 멈췄다
+        # (BrokenProcessPool, 2026-09-09). 원인은 못 찾았지만 — fork 한 자식이 CUDA·MuJoCo·
+        # 추론 스레드가 살아있는 부모에서 갈라지는 구조라 안전하지 않다 — False 로 두면
+        # 풀 없이 카메라를 차례로 인코딩한다(같은 파일 dataset_writer.py:373-375).
+        # 영상은 그대로 남고 에피소드당 몇 초 느려질 뿐이다.
+        ds.save_episode(parallel_encoding=bool(cfg.parallel_encoding))
         ep_success.append(bool(success))
         kept += 1
         round_frames += len(frames)

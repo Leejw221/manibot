@@ -27,6 +27,10 @@ save_every: 5
 #   시뮬 84x84 에서 영상이 아끼는 용량은 크지 않다(50 에피소드 PNG 로도 약 160 MB) —
 #   인코더가 계속 문제면 false 로 두면 된다. 스키마·학습 경로는 같다.
 use_videos: true
+# 카메라별 영상 인코딩을 프로세스 풀로 병렬화할지. **기본 false** — LeRobot 기본값(true)은
+# 에피소드마다 ProcessPoolExecutor 를 띄우는데 그 워커가 두 번 죽어 수집이 멈췄다
+# [실측 2026-09-09]. false 면 풀 없이 차례로 인코딩한다. 영상은 그대로다.
+parallel_encoding: false
 # ⚠ APO 의 c=0(개입 직전 K 프레임)은 여기서 만들지 않는다 —
 #    학습 직전에 utils/intervention_labels.relabel_preintv(mode, k) 로 만든다.
 use_ema: true
