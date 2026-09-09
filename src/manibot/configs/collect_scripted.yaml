@@ -1,6 +1,8 @@
 defaults:
   - task: franka_microwave
   - _self_
+  - override hydra/job_logging: none
+  - override hydra/hydra_logging: none
 
 # Hydra 기본값은 실행마다 `outputs/<날짜>/<시각>/` 을 만들고 cwd 를 거기로 옮긴다.
 # 출력 경로는 우리가 정하므로 끈다 (default_policy.yaml 과 같은 설정).

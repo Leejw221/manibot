@@ -22,3 +22,4 @@ wandb/
 # NERO: build_assets.py 가 만드는 중간 URDF (robot.xml/gripper.xml 은 커밋한다)
 src/manibot/robots/nero/nero.urdf
 src/manibot/robots/nero/_robosuite_build/
+*.log
