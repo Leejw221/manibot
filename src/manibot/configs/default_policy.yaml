@@ -63,6 +63,12 @@ val:
 
 # 평가 롤아웃을 **배포·실물과 같은 구조**로 돈다 (utils/eval.py:rollout_episode).
 # 청크를 관측 시각에 앵커해 꺼내므로 늦게 온 청크가 행동을 밀지 않는다.
+# 롤아웃을 창으로 띄울지. view_fps>0 이면 사람이 볼 수 있게 실시간으로 늦춘다
+# (0 이면 최고 속도 — 성공률만 잴 때 쓴다).
+view: false
+view_res: 384
+view_fps: 20
+
 eval_merger: temporal_ensemble
 eval_te_coeff: 0.01
 eval_async_infer: true

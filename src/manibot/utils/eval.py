@@ -32,6 +32,18 @@ def _frames_to_video(frames, path: Path, fps: float) -> None:
     write_video(str(path), stacked, fps)
 
 
+def _unwrap(env):
+    """lerobot 래퍼를 벗겨 robosuite env 를 꺼낸다 — 렌더가 이걸 쓴다."""
+    e = env
+    for _ in range(4):
+        if hasattr(e, "sim"):
+            return e
+        e = getattr(e, "env", None)
+        if e is None:
+            break
+    raise RuntimeError("robosuite env 를 못 찾았다")
+
+
 def _progress(env):
     """task 가 단계별 진행을 들고 있으면 그 사본. 없으면 None.
 
@@ -50,7 +62,7 @@ def _progress(env):
 
 def rollout_episode(env, predict_fn, obs_horizon, action_horizon, max_steps, video_key=None,
                     merger_name="temporal_ensemble", te_coeff=0.01, anchor_offset=0,
-                    async_infer=True, recorder=None):
+                    async_infer=True, recorder=None, viewer=None, ep_label=""):
     """Run one episode. Returns (success, sum_reward, max_reward, steps, frames, progress).
 
     ⭐ **배포(`scripts/collect_intervention.py`)·실물(`manipulation_pipeline`)과 같은 구조다.**
@@ -61,6 +73,7 @@ def rollout_episode(env, predict_fn, obs_horizon, action_horizon, max_steps, vid
 
     `recorder(action)` 을 주면 매 스텝 `env.step` **직전에** 부른다 — 배포 데이터를
     같이 모으는 경로다(호출자가 env 를 붙잡고 원본 관측을 꺼낸다).
+    `viewer` 를 주면 같은 자리에서 창을 갱신한다 (`utils/viewer.SimViewer`).
     """
     from concurrent.futures import ThreadPoolExecutor
 
@@ -70,6 +83,8 @@ def rollout_episode(env, predict_fn, obs_horizon, action_horizon, max_steps, vid
     history = deque([obs] * obs_horizon, maxlen=obs_horizon)
     frames = [obs[video_key]] if video_key else None
 
+    if viewer is not None:
+        viewer.reset_clock()
     merger = make_merger(merger_name, te_coeff=te_coeff)
     pool = ThreadPoolExecutor(1) if async_infer else None
     pending = None
@@ -104,6 +119,9 @@ def rollout_episode(env, predict_fn, obs_horizon, action_horizon, max_steps, vid
                     raise RuntimeError("첫 청크를 못 받았다 — predict_fn 을 확인할 것")
             last_action = action
 
+            if viewer is not None:
+                viewer.show(_unwrap(env), f"{ep_label}step{steps}")
+                viewer.pace()
             if recorder is not None:
                 recorder(action)
             obs, reward, _, _ = env.step(np.asarray(action))
@@ -139,6 +157,7 @@ def eval_policy(
     anchor_offset: int = 0,
     async_infer: bool = True,
     collector=None,
+    viewer=None,
 ) -> dict:
     """Roll out `n_episodes` and aggregate.
 
@@ -158,6 +177,7 @@ def eval_policy(
             merger_name=merger_name, te_coeff=te_coeff, anchor_offset=anchor_offset,
             async_infer=async_infer,
             recorder=collector.record if collector is not None else None,
+            viewer=viewer, ep_label=f"ep{ep} ",
         )
         if collector is not None:
             collector.finish(ep, success)

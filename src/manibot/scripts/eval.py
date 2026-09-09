@@ -112,6 +112,12 @@ def evaluate(cfg: DictConfig):
     env = make_eval_env(cfg.task)
     image_keys = list(cfg.task.image_keys)
     try:
+        viewer = None
+        if cfg.view:
+            from manibot.utils.viewer import SimViewer
+            viewer = SimViewer(OmegaConf.to_container(cfg.task.sim.cameras, resolve=True),
+                               res=cfg.view_res, fps=cfg.view_fps, title="manibot eval")
+            logger.info(f"창을 띄운다 (view_fps={cfg.view_fps} · 0 이면 최고 속도)")
         collector = None
         if cfg.collect.enable:
             raw = env
@@ -137,9 +143,11 @@ def evaluate(cfg: DictConfig):
             merger_name=cfg.eval_merger, te_coeff=cfg.eval_te_coeff,
             anchor_offset=0 if hasattr(policy, "predict_action_chunk") else cfg.policy.obs_horizon - 1,
             async_infer=cfg.eval_async_infer,
-            collector=collector,
+            collector=collector, viewer=viewer,
         )
     finally:
+        if viewer is not None:
+            viewer.close()
         if collector is not None:
             collector.close()
         env.close()
