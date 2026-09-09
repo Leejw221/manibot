@@ -61,6 +61,23 @@ val:
   num_viz_videos: 4
   num_viz_samples: 4
 
+# 평가 롤아웃을 **배포·실물과 같은 구조**로 돈다 (utils/eval.py:rollout_episode).
+# 청크를 관측 시각에 앵커해 꺼내므로 늦게 온 청크가 행동을 밀지 않는다.
+eval_merger: temporal_ensemble
+eval_te_coeff: 0.01
+eval_async_infer: true
+
+# 평가하면서 롤아웃을 **배포 데이터로 같이 저장**할지 (개입 없음 -> action_mode 전부 0).
+# collect_intervention 과 같은 형식이라 그대로 합칠 수 있다.
+collect:
+  enable: false
+  repo_id: null
+  root: null
+  single_task: "put the square nut on the peg"
+  save_every: 5
+  use_videos: true
+  parallel_encoding: false
+
 # TensorBoard settings
 tensorboard:
   enable: false

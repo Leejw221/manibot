@@ -28,6 +28,57 @@ from manibot.utils.task_utils import derive_task_meta, is_sim_task, make_eval_en
 logger = logging.getLogger(__name__)
 
 
+class _DeployCollector:
+    """롤아웃을 **배포 데이터**로 같이 저장한다 (`utils/deploy_dataset` 공용 코드).
+
+    개입이 없으므로 모든 프레임이 `action_mode=0`(rollout) 이다. `collect_intervention`
+    으로 모은 것과 형식·라벨이 같아 그대로 합칠 수 있다.
+    """
+
+    def __init__(self, cfg, raw, cams, low_dim):
+        from manibot.utils import deploy_dataset as dd
+
+        self.dd, self.raw, self.cams, self.low_dim = dd, raw, cams, low_dim
+        c = cfg.collect
+        self.task, self.repo_id, self.root = c.single_task, c.repo_id, c.get("root")
+        self.save_every, self.use_videos = c.save_every, c.use_videos
+        self.parallel = c.parallel_encoding
+        self.fps, self.robot_type = int(cfg.task.fps), str(cfg.task.sim.robots)
+        self.features = dd.make_features(raw._get_observations(), cams, low_dim,
+                                         raw.action_dim, self.use_videos)
+        self.ds = self._open()
+        self.ep_success = dd.read_success(self.ds.root)
+        self.n = 0
+        self.frames = []
+
+    def _open(self):
+        return self.dd.open_or_resume(self.repo_id, self.root, self.fps, self.features,
+                                      self.robot_type, self.use_videos)
+
+    def start(self, ep):
+        self.frames = []
+
+    def record(self, action):
+        self.frames.append(self.dd.make_frame(self.raw._get_observations(), self.cams,
+                                              self.low_dim, action, 0, self.task))
+
+    def finish(self, ep, success):
+        for fr in self.frames:
+            self.ds.add_frame(fr)
+        self.ds.save_episode(parallel_encoding=bool(self.parallel))
+        self.ep_success.append(bool(success))
+        self.n += 1
+        if self.save_every > 0 and self.n % self.save_every == 0:
+            self.ds.finalize()
+            self.dd.write_success(self.ds.root, self.ep_success)
+            self.ds = self._open()
+
+    def close(self):
+        self.ds.finalize()
+        self.dd.write_success(self.ds.root, self.ep_success)
+        logger.info(f"배포 데이터 {len(self.ep_success)} 에피소드 -> {self.ds.root}")
+
+
 @hydra.main(config_path="../configs", config_name="default_policy", version_base="1.3")
 def evaluate(cfg: DictConfig):
     setup_logging(save_dir=cfg.log_dir, debug=cfg.debug)
@@ -61,6 +112,15 @@ def evaluate(cfg: DictConfig):
     env = make_eval_env(cfg.task)
     image_keys = list(cfg.task.image_keys)
     try:
+        collector = None
+        if cfg.collect.enable:
+            raw = env
+            for _ in range(4):
+                if hasattr(raw, "robots"):
+                    break
+                raw = raw.env
+            cams = OmegaConf.to_container(cfg.task.sim.cameras, resolve=True)
+            collector = _DeployCollector(cfg, raw, cams, list(cfg.task.sim.state_from))
         info = eval_policy(
             env,
             make_predict_fn(policy, cfg, cfg.device,
@@ -73,8 +133,15 @@ def evaluate(cfg: DictConfig):
             videos_dir=Path(cfg.eval_dir) / "videos",
             max_episodes_rendered=cfg.val.num_viz_videos,
             video_key=image_keys[0] if image_keys else None,
+            # ⭐ 배포·실물과 같은 조건으로 잰다 (`utils/eval.py:rollout_episode` 참조)
+            merger_name=cfg.eval_merger, te_coeff=cfg.eval_te_coeff,
+            anchor_offset=0 if hasattr(policy, "predict_action_chunk") else cfg.policy.obs_horizon - 1,
+            async_infer=cfg.eval_async_infer,
+            collector=collector,
         )
     finally:
+        if collector is not None:
+            collector.close()
         env.close()
 
     logger.info(f"Eval metrics: {info['aggregated']}")

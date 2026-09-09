@@ -48,18 +48,64 @@ def _progress(env):
     return {k: bool(v) for k, v in p.items()}
 
 
-def rollout_episode(env, predict_fn, obs_horizon, action_horizon, max_steps, video_key=None):
-    """Run one episode. Returns (success, sum_reward, max_reward, steps, frames, progress)."""
+def rollout_episode(env, predict_fn, obs_horizon, action_horizon, max_steps, video_key=None,
+                    merger_name="temporal_ensemble", te_coeff=0.01, anchor_offset=0,
+                    async_infer=True, recorder=None):
+    """Run one episode. Returns (success, sum_reward, max_reward, steps, frames, progress).
+
+    ⭐ **배포(`scripts/collect_intervention.py`)·실물(`manipulation_pipeline`)과 같은 구조다.**
+    청크를 관측 시각에 앵커해 `merger.get_action(step)` 로 꺼낸다 — 늦게 온 청크는 앞부분이
+    버려질 뿐, 실행되는 행동은 언제나 "지금 시각에 대한 예측"이다.  예전 판은 청크를
+    그대로 8스텝 재생해서, 비동기 배포에서는 모든 행동이 한 청크씩 늦게 적용됐다
+    [실측 2026-09-09, 같은 체크포인트: 청크 재생 6/20 vs merger 28/50].
+
+    `recorder(action)` 을 주면 매 스텝 `env.step` **직전에** 부른다 — 배포 데이터를
+    같이 모으는 경로다(호출자가 env 를 붙잡고 원본 관측을 꺼낸다).
+    """
+    from concurrent.futures import ThreadPoolExecutor
+
+    from manibot.rollout.merger import make_merger
+
     obs = env.reset()
     history = deque([obs] * obs_horizon, maxlen=obs_horizon)
     frames = [obs[video_key]] if video_key else None
 
+    merger = make_merger(merger_name, te_coeff=te_coeff)
+    pool = ThreadPoolExecutor(1) if async_infer else None
+    pending = None
+    last_action = None
     rewards = []
     success = False
     steps = 0
-    while steps < max_steps and not success:
-        chunk = predict_fn(list(history))          # (pred_horizon, action_dim)
-        for action in chunk[:action_horizon]:
+    try:
+        while steps < max_steps and not success:
+            if pool is None:
+                # 동기: 이번 스텝의 예측이 없을 때만 새로 뽑는다 (추론 횟수는 예전과 같다)
+                if merger.get_action(steps) is None:
+                    merger.submit(steps - anchor_offset,
+                                  np.asarray(predict_fn(list(history))))
+            else:
+                if pending is not None and pending[1].done():
+                    merger.submit(pending[0] - anchor_offset,
+                                  np.asarray(pending[1].result()))
+                    pending = None
+                if pending is None:            # 제출하는 즉시 다음 요청 (continuous inference)
+                    pending = (steps, pool.submit(predict_fn, list(history)))
+
+            action = merger.get_action(steps)
+            if action is None and pending is not None:
+                # 콜드 스타트 — 첫 청크는 기다린다
+                merger.submit(pending[0] - anchor_offset, np.asarray(pending[1].result()))
+                pending = None
+                action = merger.get_action(steps)
+            if action is None:
+                action = last_action           # STALL — 마지막 행동을 유지한다
+                if action is None:
+                    raise RuntimeError("첫 청크를 못 받았다 — predict_fn 을 확인할 것")
+            last_action = action
+
+            if recorder is not None:
+                recorder(action)
             obs, reward, _, _ = env.step(np.asarray(action))
             history.append(obs)
             if frames is not None:
@@ -69,9 +115,9 @@ def rollout_episode(env, predict_fn, obs_horizon, action_horizon, max_steps, vid
             # robosuite 는 성공 상태에서도 done 을 안 세우는 태스크가 있어 is_success 를 본다.
             if env.is_success()["task"]:
                 success = True
-                break
-            if steps >= max_steps:
-                break
+    finally:
+        if pool is not None:
+            pool.shutdown(wait=False, cancel_futures=True)
 
     return (success, float(np.sum(rewards)), float(np.max(rewards) if rewards else 0.0),
             steps, frames, _progress(env))
@@ -88,6 +134,11 @@ def eval_policy(
     videos_dir: Path | None = None,
     max_episodes_rendered: int = 0,
     video_key: str | None = None,
+    merger_name: str = "temporal_ensemble",
+    te_coeff: float = 0.01,
+    anchor_offset: int = 0,
+    async_infer: bool = True,
+    collector=None,
 ) -> dict:
     """Roll out `n_episodes` and aggregate.
 
@@ -99,10 +150,17 @@ def eval_policy(
     per_episode, video_paths = [], []
     for ep in range(n_episodes):
         record = videos_dir is not None and video_key is not None and ep < max_episodes_rendered
+        if collector is not None:
+            collector.start(ep)
         success, sum_r, max_r, steps, frames, prog = rollout_episode(
             env, predict_fn, obs_horizon, action_horizon, max_steps,
             video_key=video_key if record else None,
+            merger_name=merger_name, te_coeff=te_coeff, anchor_offset=anchor_offset,
+            async_infer=async_infer,
+            recorder=collector.record if collector is not None else None,
         )
+        if collector is not None:
+            collector.finish(ep, success)
         per_episode.append({"episode": ep, "success": success, "sum_reward": sum_r,
                             "max_reward": max_r, "steps": steps,
                             **({"progress": prog} if prog else {})})

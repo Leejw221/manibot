@@ -50,6 +50,8 @@ from manibot.utils.task_utils import derive_task_meta, make_eval_env, resolve
 logger = logging.getLogger(__name__)
 
 from manibot.utils.intervention_labels import LABEL_INTV, LABEL_ROLLOUT
+# ⚠ 저장 형식은 eval 과 **같은 모듈**을 쓴다 — 따로 구현하면 또 갈라진다
+from manibot.utils import deploy_dataset as dd
 
 
 # cv2.waitKey 가 주는 코드 -> 우리 키 이름. Wayland 에서 영상 창이 곧 조작면이다.
