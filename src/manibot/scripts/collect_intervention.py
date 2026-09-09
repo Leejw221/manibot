@@ -131,8 +131,12 @@ def collect(cfg: DictConfig):
     ro0 = raw._get_observations()
     img_shape = list(np.asarray(ro0[f"{next(iter(cams))}_image"]).shape)
     state_dim = int(sum(np.asarray(ro0[k]).size for k in low_dim))
+    # ⚠ 시뮬은 84x84 라 영상 인코딩이 얻는 게 거의 없는데 SVT-AV1 프로세스 풀이
+    # 자주 죽는다 [실측 2026-09-09: ep11 저장 중 BrokenProcessPool].  실물(큰 이미지)은
+    # 영상이 맞지만 여기서는 이미지로 두는 편이 안전하다 — 스키마·학습 경로는 같다.
+    img_dtype = "video" if cfg.use_videos else "image"
     features = {
-        **{name: {"dtype": "video", "shape": img_shape,
+        **{name: {"dtype": img_dtype, "shape": img_shape,
                   "names": ["height", "width", "channel"]} for name in cams.values()},
         "observation.state": {"dtype": "float32", "shape": [state_dim],
                               "names": [f"s{i}" for i in range(state_dim)]},
@@ -154,7 +158,7 @@ def collect(cfg: DictConfig):
             return LeRobotDataset.resume(repo_id=cfg.repo_id, root=root)
         return LeRobotDataset.create(repo_id=cfg.repo_id, fps=int(cfg.task.fps), root=root,
                                      features=features, robot_type=str(cfg.task.sim.robots),
-                                     use_videos=True)
+                                     use_videos=bool(cfg.use_videos))
 
     ds = _open()
     succ_path = Path(ds.root) / "episode_success.json"
@@ -267,12 +271,14 @@ def collect(cfg: DictConfig):
             ds.add_frame(fr)
         ds.save_episode()
         ep_success.append(bool(success))
-        succ_path.write_text(json.dumps(ep_success))
         kept += 1
         logger.info(f"  ep{kept0+kept-1}: {len(frames):4d} 프레임 · 개입 {n_i} · "
                     f"{'성공' if success else '실패'} · 누적 {kept0+kept}/{cfg.n_episodes}")
         if cfg.save_every > 0 and kept % cfg.save_every == 0:
             ds.finalize()                  # 여기까지는 죽어도 남는다
+            # ⚠ 성공 목록도 **여기서만** 쓴다. 매 에피소드마다 쓰면 finalize 전에 죽었을 때
+            # 못 읽는 에피소드까지 세어 이어받기 개수가 어긋난다 (2026-09-09 실측: 10 vs 11)
+            succ_path.write_text(json.dumps(ep_success))
             ds = _open()
 
 # ⚠ finalize() 를 빠뜨리면 **잘린 parquet 이 남는다** — save_episode 가 백그라운드로

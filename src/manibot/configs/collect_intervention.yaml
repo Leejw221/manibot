@@ -16,6 +16,13 @@ single_task: "put the square nut on the peg"
 root: null
 # 몇 에피소드마다 finalize 할지. finalize 전에 죽으면 그 뒤 것은 footer 가 없어 못 읽는다.
 save_every: 5
+# 이미지를 mp4 로 인코딩할지. **실물과 같게 true 로 둔다** (사용자 결정 2026-09-09).
+# ⚠ SVT-AV1 프로세스 풀이 죽은 적이 있다 [실측 2026-09-09: ep11 저장 중 BrokenProcessPool,
+#   원인 미규명 — 커널 로그에 기록 없고 디스크·메모리는 여유였다].  그때 save_every 덕에
+#   11개 중 10개가 남았다.  죽으면 같은 명령을 다시 주면 이어받는다.
+#   시뮬 84x84 에서 영상이 아끼는 용량은 크지 않다(50 에피소드 PNG 로도 약 160 MB) —
+#   인코더가 계속 문제면 false 로 두면 된다. 스키마·학습 경로는 같다.
+use_videos: true
 # ⚠ APO 의 c=0(개입 직전 K 프레임)은 여기서 만들지 않는다 —
 #    학습 직전에 utils/intervention_labels.relabel_preintv(mode, k) 로 만든다.
 use_ema: true
