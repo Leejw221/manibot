@@ -21,7 +21,8 @@ from manibot.rollout import make_predict_fn
 from manibot.utils.checkpoints import (get_best_checkpoint, get_latest_checkpoint,
                                        load_ema_weights, load_model_weights)
 from manibot.utils.dataset_utils import create_dataset_stats
-from manibot.utils.eval import eval_policy
+from manibot.utils.eval import _unwrap, eval_policy
+from manibot.utils.seeding import seed_sim_env
 from manibot.utils.logger import setup_logging
 from manibot.utils.task_utils import derive_task_meta, is_sim_task, make_eval_env
 
@@ -110,6 +111,7 @@ def evaluate(cfg: DictConfig):
 
     policy.eval()
     env = make_eval_env(cfg.task)
+    seed_sim_env(_unwrap(env), cfg.seed)
     image_keys = list(cfg.task.image_keys)
     try:
         viewer = None

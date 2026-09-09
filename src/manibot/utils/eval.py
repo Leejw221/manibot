@@ -65,11 +65,9 @@ def rollout_episode(env, predict_fn, obs_horizon, action_horizon, max_steps, vid
                     async_infer=True, recorder=None, viewer=None, ep_label=""):
     """Run one episode. Returns (success, sum_reward, max_reward, steps, frames, progress).
 
-    ⭐ **배포(`scripts/collect_intervention.py`)·실물(`manipulation_pipeline`)과 같은 구조다.**
-    청크를 관측 시각에 앵커해 `merger.get_action(step)` 로 꺼낸다 — 늦게 온 청크는 앞부분이
-    버려질 뿐, 실행되는 행동은 언제나 "지금 시각에 대한 예측"이다.  예전 판은 청크를
-    그대로 8스텝 재생해서, 비동기 배포에서는 모든 행동이 한 청크씩 늦게 적용됐다
-    [실측 2026-09-09, 같은 체크포인트: 청크 재생 6/20 vs merger 28/50].
+    배포(`scripts/collect_intervention.py`)·실물(`manipulation_pipeline`)과 같은 구조다 —
+    청크를 시각에 앵커해 `merger.get_action(step)` 으로 꺼내므로, 늦게 온 청크는 앞부분이
+    버려질 뿐 실행되는 행동은 언제나 지금의 예측이다.
 
     `recorder(action)` 을 주면 매 스텝 `env.step` **직전에** 부른다 — 배포 데이터를
     같이 모으는 경로다(호출자가 env 를 붙잡고 원본 관측을 꺼낸다).

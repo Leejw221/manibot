@@ -21,6 +21,7 @@ import hydra
 import numpy as np
 from omegaconf import DictConfig, OmegaConf
 
+from manibot.utils.seeding import seed_sim_env
 from manibot.utils.task_utils import register_sim_modules, resolve, sim_controller_config
 
 
@@ -73,7 +74,7 @@ def collect(cfg: DictConfig):
         **_kw(sim.get("env_kwargs")),
     )
     env.reset()                         # seed 를 주기 전에 한 번 만들어 둔다
-    np.random.seed(cfg.seed)            # 환경의 배치 흔들기가 이걸 쓴다
+    seed_sim_env(env, cfg.seed)         # 전역 np.random 만으로는 배치가 안 잡힌다
 
     kept, tried, t0 = 0, 0, time.time()
     with h5py.File(out, "w") as f:

@@ -24,27 +24,23 @@ APO 의 c=0(개입 직전 K 프레임)은 **학습 직전에** `utils/interventi
     python src/manibot/scripts/convert.py --local-dir <root> --native -o data/<이름>_zarr
 """
 
-import json
 import logging
 import os
-import time
-from pathlib import Path
 from concurrent.futures import ThreadPoolExecutor
 
-import cv2
 import hydra
 import numpy as np
 import torch
 from omegaconf import DictConfig, OmegaConf
-
-from lerobot.datasets.lerobot_dataset import LeRobotDataset
 
 from manibot.policies.factory import make_policy
 from manibot.rollout import make_predict_fn
 from manibot.rollout.merger import make_merger
 from manibot.utils.checkpoints import load_ema_weights, load_model_weights
 from manibot.utils.dataset_utils import create_dataset_stats
+from manibot.utils.viewer import SimViewer
 from manibot.utils.logger import setup_logging
+from manibot.utils.seeding import seed_sim_env
 from manibot.utils.task_utils import derive_task_meta, make_eval_env, resolve
 
 logger = logging.getLogger(__name__)
@@ -52,40 +48,6 @@ logger = logging.getLogger(__name__)
 from manibot.utils.intervention_labels import LABEL_INTV, LABEL_ROLLOUT
 # ⚠ 저장 형식은 eval 과 **같은 모듈**을 쓴다 — 따로 구현하면 또 갈라진다
 from manibot.utils import deploy_dataset as dd
-
-
-# cv2.waitKey 가 주는 코드 -> 우리 키 이름. Wayland 에서 영상 창이 곧 조작면이다.
-#
-# ⚠ **`& 0xFF` 를 씌우면 안 된다.** Linux 에서 cv2 는 방향키를 X11 keysym 으로 주는데
-# (왼쪽 65361) 하위 바이트만 취하면 65361 & 255 = 81 = 'Q' 가 되어 **왼쪽 화살표가
-# 종료 명령이 된다** (2026-09-08 실측: 왼쪽을 누르니 창이 꺼졌다). 위/오른쪽도 각각
-# 'R'(다시)/'S'(저장) 로 둔갑한다. 그래서 전체 코드를 그대로 보고 표로 푼다.
-# 빌드마다 방향키 코드가 달라서 세 계열을 모두 넣는다. 우리 문자 명령(i/n/r/s/q =
-# 105/110/114/115/113)은 81~84 와 겹치지 않으므로 그 구간은 방향키로 읽어도 안전하다.
-_CV_KEYS = {
-    27: "esc", 13: "enter", 32: "space",
-    65361: "left", 65362: "up", 65363: "right", 65364: "down",          # X11 keysym
-    2424832: "left", 2490368: "up", 2555904: "right", 2621440: "down",  # 일부 Windows/Qt 빌드
-    81: "left", 82: "up", 83: "right", 84: "down",                      # 하위바이트만 오는 빌드
-}
-
-
-def _show(raw, cams, res, stage, ep, step, intervening):
-    """정책이 보는 카메라를 크게 띄우고 상태를 겹쳐 그린다. 반환: 눌린 키 이름 또는 None."""
-    tiles = [raw.sim.render(width=res, height=res, camera_name=c)[::-1] for c in cams]
-    im = np.concatenate(tiles, axis=1)[:, :, ::-1].copy()      # RGB -> BGR
-    on = intervening
-    cv2.rectangle(im, (0, 0), (im.shape[1], 30), (0, 0, 160) if on else (40, 40, 40), -1)
-    cv2.putText(im, f"ep{ep} step{step}  {'INTERVENING (i=off)' if on else 'policy (i=on)'}"
-                f"  [{stage}]", (8, 21), cv2.FONT_HERSHEY_SIMPLEX, 0.55, (255, 255, 255), 1)
-    cv2.imshow("manibot deployment", im)
-    k = cv2.waitKey(1)
-    if k < 0:
-        return None
-    name = _CV_KEYS.get(k)
-    if name is not None:
-        return name
-    return chr(k) if 32 < k < 127 else None
 
 
 def _demo_frame_count(cfg):
@@ -136,6 +98,7 @@ def collect(cfg: DictConfig):
 
     env = make_eval_env(cfg.task)
     raw = _raw(env)
+    seed_sim_env(raw, cfg.seed)
     Expert = resolve(cfg.task.sim.expert)
     low_dim = list(cfg.task.sim.state_from)
     # robosuite 카메라 이름 -> 우리 관측 이름. LeRobot 특징 이름이 이 매핑을 그대로 쓴다
@@ -144,49 +107,26 @@ def collect(cfg: DictConfig):
     obs_h, act_h = cfg.policy.obs_horizon, cfg.policy.action_horizon
 
     trig = KeyboardTrigger()
+    # Wayland 에서는 전역 키 캡처가 안 돼 **이 창이 곧 조작면**이다 (utils/viewer 참조)
+    viewer = SimViewer(cams, res=cfg.view_res, fps=cfg.control_fps,
+                       title="manibot deployment") if cfg.view else None
 
-    # 실물과 같은 형식으로 쓴다 — LeRobotDataset(parquet + mp4).  학습은 `scripts/convert.py`
-    # 로 zarr 화해서 읽는다(실물 데이터가 타는 경로와 같다).  형상은 첫 관측에서 읽는다.
-    ro0 = raw._get_observations()
-    img_shape = list(np.asarray(ro0[f"{next(iter(cams))}_image"]).shape)
-    state_dim = int(sum(np.asarray(ro0[k]).size for k in low_dim))
-    # ⚠ 시뮬은 84x84 라 영상 인코딩이 얻는 게 거의 없는데 SVT-AV1 프로세스 풀이
-    # 자주 죽는다 [실측 2026-09-09: ep11 저장 중 BrokenProcessPool].  실물(큰 이미지)은
-    # 영상이 맞지만 여기서는 이미지로 두는 편이 안전하다 — 스키마·학습 경로는 같다.
-    img_dtype = "video" if cfg.use_videos else "image"
-    features = {
-        **{name: {"dtype": img_dtype, "shape": img_shape,
-                  "names": ["height", "width", "channel"]} for name in cams.values()},
-        "observation.state": {"dtype": "float32", "shape": [state_dim],
-                              "names": [f"s{i}" for i in range(state_dim)]},
-        "action": {"dtype": "float32", "shape": [int(raw.action_dim)],
-                   "names": [f"a{i}" for i in range(int(raw.action_dim))]},
-        # 실물과 같은 이름·형상.  0 = rollout · 1 = intervention
-        "action_mode": {"dtype": "int64", "shape": (1,), "names": None},
-    }
-    # ⚠ **중간에 죽으면 finalize 전의 parquet 은 footer 가 없어 통째로 못 읽는다.**
-    # [실측 2026-09-09] 42 에피소드에서 EGL 드라이버가 세그폴트로 죽어 전부 잃었다
-    # (libnvidia-eglcore — hard_reset 이 리셋마다 렌더러를 새로 만든다).
-    # ① 이미 있으면 이어받고 ② save_every 마다 finalize 해서 손실을 그만큼으로 묶는다.
-    # 실물(`flare/scripts/rollout_intervention.py`)도 같은 자리에서 resume 을 쓴다.
+    # 실물과 같은 형식 — LeRobotDataset. 학습은 `scripts/convert.py --native` 로 zarr 화한다.
+    # ⚠ finalize 전의 parquet 은 footer 가 없어 못 읽는다. 렌더러·인코더가 죽는 일이 있으므로
+    # ① 있으면 이어받고 ② save_every 마다 finalize 해서 손실을 그만큼으로 묶는다.
+    features = dd.make_features(raw._get_observations(), cams, low_dim, raw.action_dim,
+                                cfg.use_videos)
     root = cfg.get("root")
 
     def _open():
-        if root and Path(root).exists():
-            logger.info(f"이어받기: {root}")
-            return LeRobotDataset.resume(repo_id=cfg.repo_id, root=root)
-        return LeRobotDataset.create(repo_id=cfg.repo_id, fps=int(cfg.task.fps), root=root,
-                                     features=features, robot_type=str(cfg.task.sim.robots),
-                                     use_videos=bool(cfg.use_videos))
+        return dd.open_or_resume(cfg.repo_id, root, cfg.task.fps, features,
+                                 cfg.task.sim.robots, cfg.use_videos)
 
     ds = _open()
-    succ_path = Path(ds.root) / "episode_success.json"
 
-    # ⭐ **라운드 크기는 에피소드가 아니라 프레임으로 정한다** — SIRIUS/APO 두 조건에
-    # 같은 데이터량을 주려고 정한 규약이다 [mani_sim/scripts/collect.py:341,
-    # EXP-10 round1 실측: ratio 1.5 · demo 7,561 프레임 -> 목표 11,341 -> 45 에피소드
-    # 11,571 프레임].  목표를 넘는 분량은 에피소드를 자르지 않으니 자연히 생긴다.
-    # 합친 데이터셋에서 demo 가 차지하는 비율 = 1/(1+ratio).
+    # 라운드 크기는 에피소드가 아니라 **프레임**으로 정한다 — SIRIUS/APO 두 조건에 같은
+    # 데이터량을 주려는 규약이다 (`mani_sim/scripts/collect.py:341`). 목표를 넘는 분량은
+    # 에피소드를 자르지 않으니 자연히 생긴다. 합친 데이터셋의 demo 비율 = 1/(1+ratio).
     round_threshold = None
     if cfg.get("round_size_ratio"):
         demo_frames = _demo_frame_count(cfg)
@@ -194,19 +134,15 @@ def collect(cfg: DictConfig):
         logger.info(f"[라운드 목표] {round_threshold:,} 프레임 "
                     f"({cfg.round_size_ratio}x {demo_frames:,} demo 프레임 -> "
                     f"합친 데이터셋 demo 비율 {1.0 / (1.0 + cfg.round_size_ratio):.0%})")
-    ep_success = json.loads(succ_path.read_text()) if succ_path.exists() else []
+    ep_success = dd.read_success(ds.root)
     kept0 = len(ep_success)
     round_frames = int(getattr(ds, "num_frames", 0) or 0)     # 이어받은 분량부터 센다
     intv_frames = 0
     logger.info(f"저장: {ds.root} (repo_id={cfg.repo_id})\n키: {HELP}")
 
-    # ⭐ 비동기 추론 — **지금 청크를 재생하는 동안 다음 청크를 계산한다.**
-    # 실물에는 추론 시간만큼의 지연이 원래 있으므로 시뮬도 같은 구조로 둔다.
-    #
-    # ⚠ 지연은 **없애지 않고 흡수한다**: 청크를 관측 시각에 앵커해 `merger.get_action(step)`
-    # 로 꺼내므로, 늦게 온 청크는 앞부분이 버려질 뿐 실행되는 행동은 언제나 "지금 시각에
-    # 대한 예측"이다. [실측 2026-09-09] 앵커 없이 chunk[0] 을 지금 실행하던 예전 판은
-    # 20 에피소드 중 0 성공, 이 구조로 바꾸니 10 성공(동기 옛 구조는 6).
+    # 비동기 추론 — 재생하는 동안 다음 청크를 계산한다. 실물에는 추론 지연이 원래 있으므로
+    # 시뮬도 같은 구조로 둔다. 지연은 없애지 않고 **흡수**한다: 청크를 시각에 앵커해 merger
+    # 에서 꺼내므로 늦게 온 청크는 앞부분이 버려질 뿐, 실행되는 행동은 언제나 지금의 예측이다.
     pool = ThreadPoolExecutor(1) if cfg.async_infer else None
     merger = make_merger(cfg.merger, te_coeff=cfg.te_coeff)
 
@@ -223,16 +159,14 @@ def collect(cfg: DictConfig):
         obs = env.reset()
         trig.reset_episode()
         hist = deque([obs] * obs_h, maxlen=obs_h)
-        t_next = time.perf_counter()
+        if viewer is not None:
+            viewer.reset_clock()
         expert, pending, last_action, step = None, None, None, 0
         merger.clear()
         frames = []
         success = False
 
-        # ⭐ **실물(`manipulation_pipeline`)의 배포 루프와 같은 구조다.**
-        # 청크를 절대 스텝에 앵커해 `merger.get_action(step)` 으로 꺼낸다 — 그래야
-        # "지금 시각에 대한 예측"이 지금 실행된다. 예전 판은 t-8 관측으로 만든 chunk[0]
-        # 을 t 에 실행해서 **모든 행동이 8스텝 늦게 적용**됐고 성공률이 0/20 이었다.
+        # 실물(`manipulation_pipeline`)의 배포 루프와 같은 구조다.
         while step < cfg.max_steps:
             if trig.events["exit_early"] or trig.events["stop_recording"]:
                 break
@@ -275,28 +209,21 @@ def collect(cfg: DictConfig):
                 last_action = action
                 mode = LABEL_ROLLOUT
 
-            if cfg.view:
-                trig.feed(_show(raw, cams, cfg.view_res,
-                                expert.stage if expert else "-", kept, step,
-                                trig.intervening))
-            if cfg.control_fps > 0:                # 사람이 보고 반응할 시간을 준다
-                t_next = max(t_next, time.perf_counter()) + 1.0 / cfg.control_fps
-            ro = raw._get_observations()
-            frames.append({
-                **{name: ro[f"{c}_image"][::-1] for c, name in cams.items()},
-                "observation.state": np.concatenate(
-                    [np.asarray(ro[k], dtype=np.float32).ravel() for k in low_dim]),
-                "action": np.asarray(action, dtype=np.float32),
-                "action_mode": np.array([mode], dtype=np.int64),
-                "task": cfg.single_task,
-            })
+            if viewer is not None:
+                on = trig.intervening
+                trig.feed(viewer.show(
+                    raw, f"ep{kept0+kept} step{step}  "
+                         f"{'INTERVENING (i=off)' if on else 'policy (i=on)'}  "
+                         f"[{expert.stage if expert else '-'}]", highlight=on))
+            frames.append(dd.make_frame(raw._get_observations(), cams, low_dim,
+                                        action, mode, cfg.single_task))
             obs, _, _, _ = env.step(np.asarray(action))
             hist.append(obs)
             step += 1
             if raw._check_success():
                 success = True
-            if cfg.control_fps > 0:
-                time.sleep(max(0.0, t_next - time.perf_counter()))
+            if viewer is not None:
+                viewer.pace()
             if success:
                 break
 
@@ -306,12 +233,9 @@ def collect(cfg: DictConfig):
         n_i = sum(1 for f in frames if int(f["action_mode"][0]) == LABEL_INTV)
         for fr in frames:
             ds.add_frame(fr)
-        # ⚠ parallel_encoding 기본값(True)은 카메라마다 **ProcessPoolExecutor 를 띄운다**
-        # (`lerobot/datasets/dataset_writer.py:344`). 그 워커가 두 번 죽어 수집이 멈췄다
-        # (BrokenProcessPool, 2026-09-09). 원인은 못 찾았지만 — fork 한 자식이 CUDA·MuJoCo·
-        # 추론 스레드가 살아있는 부모에서 갈라지는 구조라 안전하지 않다 — False 로 두면
-        # 풀 없이 카메라를 차례로 인코딩한다(같은 파일 dataset_writer.py:373-375).
-        # 영상은 그대로 남고 에피소드당 몇 초 느려질 뿐이다.
+        # parallel_encoding=True 는 카메라마다 ProcessPoolExecutor 를 띄우는데
+        # (`lerobot/datasets/dataset_writer.py:344`), CUDA·MuJoCo·추론 스레드가 살아있는
+        # 부모에서 fork 하는 구조라 워커가 죽는 일이 있다. False 면 풀 없이 차례로 인코딩한다.
         ds.save_episode(parallel_encoding=bool(cfg.parallel_encoding))
         ep_success.append(bool(success))
         kept += 1
@@ -324,21 +248,18 @@ def collect(cfg: DictConfig):
                     f"(개입 {intv_frames/max(round_frames,1):.0%})")
         if cfg.save_every > 0 and kept % cfg.save_every == 0:
             ds.finalize()                  # 여기까지는 죽어도 남는다
-            # ⚠ 성공 목록도 **여기서만** 쓴다. 매 에피소드마다 쓰면 finalize 전에 죽었을 때
-            # 못 읽는 에피소드까지 세어 이어받기 개수가 어긋난다 (2026-09-09 실측: 10 vs 11)
-            succ_path.write_text(json.dumps(ep_success))
+            # 성공 목록도 여기서만 쓴다 — 매번 쓰면 못 읽는 에피소드까지 세어 어긋난다
+            dd.write_success(ds.root, ep_success)
             ds = _open()
 
-# ⚠ finalize() 를 빠뜨리면 **잘린 parquet 이 남는다** — save_episode 가 백그라운드로
-# 쓰기 때문이다 (2026-09-08 실측: 5,651,594 -> 5,483,546 바이트로 잘렸다).
+    # finalize() 를 빠뜨리면 잘린 parquet 이 남는다 — save_episode 가 백그라운드로 쓴다.
     ds.finalize()
-    # 성공 여부는 시뮬에만 있는 정보라 LeRobot 스키마를 건드리지 않고 옆에 둔다.
-    succ_path.write_text(json.dumps(ep_success))
+    dd.write_success(ds.root, ep_success)
     if pool is not None:
         pool.shutdown(wait=False, cancel_futures=True)
     trig.stop()
-    if cfg.view:
-        cv2.destroyAllWindows()
+    if viewer is not None:
+        viewer.close()
     logger.info(f"수집 완료: {kept} 에피소드 · 성공 {sum(ep_success)}/{len(ep_success)} "
                 f"-> {ds.root}")
 
