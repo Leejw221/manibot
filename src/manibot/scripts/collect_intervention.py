@@ -141,10 +141,25 @@ def collect(cfg: DictConfig):
         # 실물과 같은 이름·형상.  0 = rollout · 1 = intervention
         "action_mode": {"dtype": "int64", "shape": (1,), "names": None},
     }
-    ds = LeRobotDataset.create(repo_id=cfg.repo_id, fps=int(cfg.task.fps), root=cfg.get("root"),
-                               features=features, robot_type=str(cfg.task.sim.robots),
-                               use_videos=True)
-    ep_success = []
+    # ⚠ **중간에 죽으면 finalize 전의 parquet 은 footer 가 없어 통째로 못 읽는다.**
+    # [실측 2026-09-09] 42 에피소드에서 EGL 드라이버가 세그폴트로 죽어 전부 잃었다
+    # (libnvidia-eglcore — hard_reset 이 리셋마다 렌더러를 새로 만든다).
+    # ① 이미 있으면 이어받고 ② save_every 마다 finalize 해서 손실을 그만큼으로 묶는다.
+    # 실물(`flare/scripts/rollout_intervention.py`)도 같은 자리에서 resume 을 쓴다.
+    root = cfg.get("root")
+
+    def _open():
+        if root and Path(root).exists():
+            logger.info(f"이어받기: {root}")
+            return LeRobotDataset.resume(repo_id=cfg.repo_id, root=root)
+        return LeRobotDataset.create(repo_id=cfg.repo_id, fps=int(cfg.task.fps), root=root,
+                                     features=features, robot_type=str(cfg.task.sim.robots),
+                                     use_videos=True)
+
+    ds = _open()
+    succ_path = Path(ds.root) / "episode_success.json"
+    ep_success = json.loads(succ_path.read_text()) if succ_path.exists() else []
+    kept0 = len(ep_success)
     logger.info(f"저장: {ds.root} (repo_id={cfg.repo_id})\n키: {HELP}")
 
     # ⭐ 비동기 추론 — **지금 청크를 재생하는 동안 다음 청크를 계산한다.**
@@ -163,7 +178,7 @@ def collect(cfg: DictConfig):
 
     from collections import deque
     kept = 0
-    while kept < cfg.n_episodes and not trig.events["stop_recording"]:
+    while kept0 + kept < cfg.n_episodes and not trig.events["stop_recording"]:
         obs = env.reset()
         trig.reset_episode()
         hist = deque([obs] * obs_h, maxlen=obs_h)
@@ -252,15 +267,19 @@ def collect(cfg: DictConfig):
             ds.add_frame(fr)
         ds.save_episode()
         ep_success.append(bool(success))
+        succ_path.write_text(json.dumps(ep_success))
         kept += 1
-        logger.info(f"  ep{kept-1}: {len(frames):4d} 프레임 · 개입 {n_i} · "
-                    f"{'성공' if success else '실패'} · 누적 {kept}/{cfg.n_episodes}")
+        logger.info(f"  ep{kept0+kept-1}: {len(frames):4d} 프레임 · 개입 {n_i} · "
+                    f"{'성공' if success else '실패'} · 누적 {kept0+kept}/{cfg.n_episodes}")
+        if cfg.save_every > 0 and kept % cfg.save_every == 0:
+            ds.finalize()                  # 여기까지는 죽어도 남는다
+            ds = _open()
 
 # ⚠ finalize() 를 빠뜨리면 **잘린 parquet 이 남는다** — save_episode 가 백그라운드로
 # 쓰기 때문이다 (2026-09-08 실측: 5,651,594 -> 5,483,546 바이트로 잘렸다).
     ds.finalize()
     # 성공 여부는 시뮬에만 있는 정보라 LeRobot 스키마를 건드리지 않고 옆에 둔다.
-    (Path(ds.root) / "episode_success.json").write_text(json.dumps(ep_success))
+    succ_path.write_text(json.dumps(ep_success))
     if pool is not None:
         pool.shutdown(wait=False, cancel_futures=True)
     trig.stop()

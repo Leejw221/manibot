@@ -12,7 +12,10 @@ repo_id: ???
 # LeRobot 은 프레임마다 자연어 task 를 요구한다.
 single_task: "put the square nut on the peg"
 # null 이면 LeRobot 기본 위치(~/.cache/huggingface/lerobot/<repo_id>).
+# **이미 있으면 이어받는다** — 중간에 죽어도 같은 명령을 다시 주면 된다.
 root: null
+# 몇 에피소드마다 finalize 할지. finalize 전에 죽으면 그 뒤 것은 footer 가 없어 못 읽는다.
+save_every: 5
 # ⚠ APO 의 c=0(개입 직전 K 프레임)은 여기서 만들지 않는다 —
 #    학습 직전에 utils/intervention_labels.relabel_preintv(mode, k) 로 만든다.
 use_ema: true
