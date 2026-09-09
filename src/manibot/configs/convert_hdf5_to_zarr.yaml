@@ -2,6 +2,13 @@ defaults:
   - task: robomimic_square
   - _self_
 
+# Hydra 기본값은 실행마다 `outputs/<날짜>/<시각>/` 을 만들고 cwd 를 거기로 옮긴다.
+# 출력 경로는 우리가 정하므로 끈다 (default_policy.yaml 과 같은 설정).
+hydra:
+  output_subdir: null
+  run:
+    dir: .
+
 # null 이면 task.hdf5_path 을 그대로 쓴다 — 라운드 누적 파일 등 다른 hdf5 를 변환하려면 지정.
 hdf5_path: null
 # 원본 hdf5 의 mask 서브셋(예: demo20)만 변환하려면 지정. 이미 필터링된 파일이면 null.

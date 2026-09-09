@@ -2,6 +2,13 @@ defaults:
   - task: square_scripted
   - _self_
 
+# Hydra 기본값은 실행마다 `outputs/<날짜>/<시각>/` 을 만들고 cwd 를 거기로 옮긴다.
+# 출력 경로는 우리가 정하므로 끈다 (default_policy.yaml 과 같은 설정).
+hydra:
+  output_subdir: null
+  run:
+    dir: .
+
 # 올릴 곳. 반드시 지정한다.
 repo_id: ???
 # 데이터셋의 자연어 task 설명 — LeRobot 은 프레임마다 이걸 요구한다.

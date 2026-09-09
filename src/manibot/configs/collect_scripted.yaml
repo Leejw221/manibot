@@ -2,6 +2,13 @@ defaults:
   - task: franka_microwave
   - _self_
 
+# Hydra 기본값은 실행마다 `outputs/<날짜>/<시각>/` 을 만들고 cwd 를 거기로 옮긴다.
+# 출력 경로는 우리가 정하므로 끈다 (default_policy.yaml 과 같은 설정).
+hydra:
+  output_subdir: null
+  run:
+    dir: .
+
 n_demos: 100
 # null 이면 task.hdf5_path 에 쓴다.
 out_path: null
