@@ -172,11 +172,54 @@ def evaluate(cfg: DictConfig):
         env.close()
 
     logger.info(f"Eval metrics: {info['aggregated']}")
+    # 샘플러 설정을 결과에 남긴다 — 없으면 나중에 "이 수치가 K 몇이었나"를
+    # 실행 시각으로 되짚어야 한다 (2026-09-10 에 실제로 그랬다).
+    sampler = OmegaConf.to_container(cfg.policy.noise_scheduler, resolve=True)
     out = eval_dir / "eval_result.json"
     out.parent.mkdir(parents=True, exist_ok=True)
-    json.dump({"checkpoint": str(checkpoint), "config": OmegaConf.to_container(cfg.task, resolve=True),
+    json.dump({"checkpoint": str(checkpoint),
+               "config": OmegaConf.to_container(cfg.task, resolve=True),
+               "sampler": sampler, "n_episodes": cfg.val.eval_n_episodes,
+               "use_ema": bool(used_ema), "seed": cfg.seed,
                **info}, open(out, "w"), indent=2)
     logger.info(f"Wrote {out}")
+
+    if cfg.wandb.enable and cfg.wandb.project:
+        _log_eval_to_wandb(cfg, checkpoint, sampler, info, eval_dir)
+
+
+def _train_run_name(checkpoint):
+    """체크포인트가 나온 학습 run 의 wandb 이름. 평가 run 을 거기에 붙여 부르려는 것."""
+    cfgs = sorted((checkpoint.parent.parent / "logs").glob("train_config_*.yaml"))
+    if not cfgs:
+        return None
+    name = OmegaConf.load(cfgs[-1]).get("wandb", {}).get("name")
+    # 학습 때 해석 안 된 보간(${task.name}-${session})이 그대로 남은 런이 있다
+    return None if (name is None or "${" in str(name)) else str(name)
+
+
+def _log_eval_to_wandb(cfg, checkpoint, sampler, info, eval_dir):
+    """평가 결과를 학습과 같은 프로젝트에 별도 run 으로 올린다.
+
+    학습 run 에 resume 하지 않는 이유: 같은 체크포인트를 K 여러 개로 평가하므로
+    한 run 에 섞이면 어느 수치가 어느 샘플러인지 구별이 안 된다.
+    """
+    import wandb
+
+    base = _train_run_name(checkpoint) or checkpoint.parent.parent.name
+    run_name = f"{base}-eval-K{sampler.get('num_inference_steps')}"
+    run = wandb.init(
+        project=cfg.wandb.project, entity=cfg.wandb.entity, name=run_name,
+        job_type="eval", dir=str(eval_dir),
+        config={"checkpoint": str(checkpoint), "train_run": base,
+                "sampler": sampler, "n_episodes": cfg.val.eval_n_episodes,
+                "task": cfg.task.name, "seed": cfg.seed,
+                "max_steps": cfg.task.sim.max_steps},
+    )
+    run.log({f"eval/{k}": v for k, v in info["aggregated"].items()})
+    run.summary["success_episodes"] = sum(1 for e in info["per_episode"] if e["success"])
+    run.finish()
+    logger.info(f"wandb: {run_name}")
 
 
 def main():
