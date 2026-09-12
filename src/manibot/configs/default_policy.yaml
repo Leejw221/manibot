@@ -101,3 +101,20 @@ wandb:
     - ${task.name}
     - ${policy.name}
   upload_checkpoints: false
+
+# ── 선호 최적화 / fine-tuning ──────────────────────────────────────────────
+# enabled=false 면 기존 학습 경로가 **한 글자도 안 바뀐다**.
+finetune:
+  enabled: false
+  loss: apo                 # apo | (나중에 sirius)
+  ref_checkpoint: null      # pi_ref.  반드시 지정
+  labels: null              # precompute_apo_labels 의 npz (S, has_intv)
+  t_stats: null             # precompute_t_stats 의 npy (m[t])
+  balanced: [0.5, 0.25, 0.25]   # correct / intervention / pre-intervention
+  apo:
+    beta: 30.0              # 측정 기반 (초기 포화율 <20%)
+    beta_d: 8.0             # APO 의 1.0 을 batch 8 -> 64 로 보정
+    beta_u: 8.0
+    z0_clamp: [-5.0, 5.0]
+    bc_weight: 0.0          # A1(ref_mode=epoch_frozen)이면 1 이어야 학습이 된다
+    ref_mode: live          # live(A2, 우리 방식) | epoch_frozen(A1, 교수님 방식)

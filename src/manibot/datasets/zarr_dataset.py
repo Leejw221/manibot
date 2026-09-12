@@ -237,7 +237,9 @@ class ZarrDataset(torch.utils.data.Dataset):
 
     def __getitem__(self, idx: int) -> dict[str, torch.Tensor]:
         ep_idx = self.replay_buffer["episode_index"][idx]
-        item = {"episode_index": torch.tensor(ep_idx)}
+        # 데이터셋 인덱스를 배치에 실어 보낸다 — 선호 최적화가 사전계산한 청크 점수(S)를
+        # 이 인덱스로 조회한다. 샘플러와 손실이 **같은 배열**을 보게 하는 유일한 연결고리다.
+        item = {"episode_index": torch.tensor(ep_idx), "dataset_index": torch.tensor(idx)}
 
         query_indices, padding = self._get_query_indices(idx, ep_idx)
         query_result = self._query_replay_buffer(query_indices)

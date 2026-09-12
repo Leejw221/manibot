@@ -60,6 +60,42 @@ def _build_scheduler(policy, optimizer, num_steps, cfg):
     )
 
 
+def _build_finetune_loss(cfg, network):
+    """finetune.enabled 면 손실 객체를, 아니면 None 을 돌려준다(기존 경로 그대로)."""
+    ft = cfg.get("finetune", None)
+    if ft is None or not ft.get("enabled", False):
+        return None
+
+    import numpy as np
+
+    from manibot.losses.apo_loss import APOLoss
+    from manibot.utils.checkpoints import build_ref_policy
+    from manibot.utils.dataset_utils import create_dataset_stats
+    from manibot.utils.task_utils import derive_task_meta
+
+    assert ft.loss == "apo", f"finetune.loss={ft.loss!r} 미지원"
+    for k in ("ref_checkpoint", "labels", "t_stats"):
+        assert ft.get(k), f"finetune.{k} 를 지정해야 한다"
+
+    device = next(network.parameters()).device
+    meta, stats = create_dataset_stats(cfg)
+    derive_task_meta(cfg.task, meta)
+    ref, used_ema = build_ref_policy(cfg, meta, stats, ft.ref_checkpoint, device)
+    logger.info(f"pi_ref = {ft.ref_checkpoint} (EMA {'적용' if used_ema else '없음'})")
+
+    a = ft.apo
+    if a.ref_mode == "epoch_frozen" and not a.bc_weight:
+        raise ValueError(
+            "ref_mode=epoch_frozen(A1) 은 r 이 상수라 utility 로 gradient 가 안 간다 — "
+            "bc_weight > 0 이어야 학습이 된다.")
+    return APOLoss(
+        ref=ref,
+        m_t=torch.from_numpy(np.load(ft.t_stats)).float(),
+        chunk_S=np.load(ft.labels)["S"],
+        beta=a.beta, beta_d=a.beta_d, beta_u=a.beta_u,
+        z0_clamp=tuple(a.z0_clamp), bc_weight=a.bc_weight, ref_mode=a.ref_mode)
+
+
 def _build_ema(policy, cfg):
     if hasattr(policy, "get_ema"):
         return policy.get_ema()
@@ -110,6 +146,10 @@ class PolicyTrainer:
         if self.use_amp:
             logger.info(f"AMP enabled: {self.amp_dtype}")
 
+        # 선호 최적화(APO) — 정책 두 개가 필요한 손실은 network 밖에서 조립한다.
+        # network 는 끝까지 평범한 정책이라 체크포인트·EMA·eval 경로가 안 바뀐다.
+        self.loss_fn = _build_finetune_loss(config, network)
+
         self.train_logger = TrainLogger(config)
 
         self.train_metrics = {
@@ -148,9 +188,15 @@ class PolicyTrainer:
         self.network.train()
         self.optimizer.zero_grad()
 
+        # 전처리기는 정책이 아는 키만 통과시킨다 — 선호 최적화가 S 를 조회할 때 쓰는
+        # dataset_index 가 여기서 떨어지므로 챙겼다 다시 붙인다.
+        _idx = batch.get("dataset_index")
         batch = self.preprocessor(batch)
+        if _idx is not None:
+            batch["dataset_index"] = _idx
         with torch.amp.autocast("cuda", dtype=self.amp_dtype, enabled=self.use_amp):
-            loss, output_dict = self.network.forward(batch)
+            loss, output_dict = (self.loss_fn(self.network, batch) if self.loss_fn
+                                 else self.network.forward(batch))
 
         # Backward pass
         self.grad_scaler.scale(loss).backward()
@@ -311,6 +357,11 @@ class PolicyTrainer:
             # Log metrics
             if is_log_step:
                 logger.info(self.train_tracker)
+                # 선호 최적화는 loss 하나로 상태를 못 본다 — 진단값을 콘솔에도 찍는다
+                # (sat_rate·apo_frac 이 beta 조정의 근거가 된다).
+                if self.loss_fn and output_dict:
+                    logger.info("  APO  " + "  ".join(
+                        f"{k}={v:.4g}" for k, v in output_dict.items()))
                 wandb_log_dict = self.train_tracker.to_dict()
                 if output_dict:
                     wandb_log_dict.update(output_dict)
@@ -487,6 +538,15 @@ def train(cfg: DictConfig):
             )
         # 지금 만들지 않는다 — PolicyTrainer.__init__ 주석 참고.
         eval_env_factory = lambda: make_eval_env(cfg.task)  # noqa: E731
+
+    # APO 는 정의상 pi_theta 가 pi_ref 에서 출발한다 (원문 Algorithm 1: pi_ref <- pi_theta^i).
+    # resume 과 다르다 — 가중치만 싣고 step·optimizer 는 새로 시작한다.
+    _ft = cfg.get("finetune", None)
+    if _ft is not None and _ft.get("enabled", False):
+        from manibot.utils.checkpoints import load_ema_weights
+        load_model_weights(policy, _ft.ref_checkpoint, cfg.device)
+        _used = load_ema_weights(policy, _ft.ref_checkpoint, cfg.device)
+        logger.info(f"pi_theta 초기화 <- {_ft.ref_checkpoint} (EMA {'적용' if _used else '없음'})")
 
     runner = PolicyTrainer(
         cfg,

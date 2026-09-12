@@ -1,0 +1,18 @@
+# @package _global_
+# APO 라운드 1 학습용 — 시연(square_ph50 50ep) + 개입 배포(square_deploy_r1 67ep) 병합.
+# 만든 법: python -m manibot.scripts.merge_zarr --out data/square_apo_r1_zarr \
+#            data/square_ph50_zarr data/square_deploy_r1_zarr
+
+# robomimic_square 와 환경·규약이 같고 **데이터만 다르다** — 공개 square-ph 200개에서
+# 무작위 50개(seed 0)를 뽑은 것.  square_scripted(우리 스크립트 50개)와 개수·task·초기분포가
+# 같고 **시연의 성질만** 다르므로, 둘을 비교하면 "스크립트 시연이 문제인가"가 갈린다.
+defaults:
+  - robomimic_square
+  - _self_
+
+task:
+  name: square_apo_r1
+  hdf5_path: ${oc.env:MANIBOT_DATASETS_DIR,data}/square_ph50/demos.hdf5
+  dataset_root: ${oc.env:MANIBOT_DATASETS_DIR,data}/square_apo_r1_zarr
+  sim:
+    max_steps: 500

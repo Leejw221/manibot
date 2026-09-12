@@ -181,3 +181,25 @@ def load_ema_weights(model, checkpoint_dir, device):
         for s, p in zip(shadow, params):
             p.copy_(s.to(p.device, dtype=p.dtype))
     return True
+
+
+def build_ref_policy(cfg, dataset_meta, stats, checkpoint, device):
+    """선호 최적화용 **동결 참조 정책**을 만든다.
+
+    ⚠ 이 정책을 학습 network 의 서브모듈로 넣으면 안 된다 — optimizer·EMA 가 따라 잡고,
+    체크포인트 키가 한 겹 깊어져 eval 이 `strict=False` 로 **조용히 아무것도 안 싣는다**.
+    Trainer 의 속성으로만 들고 다닌다.
+
+    ⚠ `train(True)` 로 두는 이유: 정책 안의 랜덤 크롭이 `self.training` 으로 갈린다.
+    eval 모드면 pi_ref 만 센터 크롭이 되어 두 정책이 다른 이미지를 본다 — 그 잡음이
+    정책 신호의 0.81배였다 [측정 2026-09-12]. grad 는 requires_grad_(False) 로 막는다.
+    """
+    from manibot.policies.factory import make_policy
+
+    ref, _, _ = make_policy(cfg, dataset_meta, stats)
+    ref = ref.to(device)
+    load_model_weights(ref, checkpoint, device)
+    used = load_ema_weights(ref, checkpoint, device)
+    ref.train(True)
+    ref.requires_grad_(False)
+    return ref, used

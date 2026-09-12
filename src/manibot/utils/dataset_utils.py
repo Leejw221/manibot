@@ -172,6 +172,27 @@ def create_dataloader(dataset, cfg: DictConfig, is_training=True):
 
     batch_size = cfg.train.batch_size if is_training else cfg.val.batch_size
 
+    # APO balanced sampling — 매 배치를 정확히 correct/intervention/pre-intv 로 채운다.
+    # 기댓값(WeightedRandomSampler)이 아니라 개수로 맞추는 이유: w_i 와 z_0 를 배치 안에서
+    # 계산하므로 구성이 흔들리면 그 통계가 같이 흔들린다.
+    ft = cfg.get("finetune", None)
+    if is_training and ft is not None and ft.get("enabled", False) and ft.get("labels"):
+        import numpy as np
+
+        from manibot.datasets.apo_sampler import BalancedBatchSampler, split_pools
+        from manibot.utils.intervention_labels import preference
+
+        lab = np.load(ft.labels)
+        sign, _ = preference(lab["S"])
+        allowed = list(sampler) if sampler is not None else None   # drop_n_last_frames 존중
+        pools = split_pools(sign, lab["has_intv"], allowed)
+        bs = BalancedBatchSampler(pools, batch_size, tuple(ft.balanced))
+        logger.info(f"APO balanced sampler: 풀 {[len(p) for p in pools]} · "
+                    f"배치당 {bs.per} · 1 에폭 {len(bs)} 배치")
+        return torch.utils.data.DataLoader(
+            dataset, num_workers=cfg.train.num_workers, batch_sampler=bs,
+            pin_memory=True, persistent_workers=cfg.train.num_workers > 0)
+
     num_workers = cfg.train.num_workers
     dataloader = torch.utils.data.DataLoader(
         dataset,
