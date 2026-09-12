@@ -108,6 +108,7 @@ finetune:
   enabled: false
   loss: apo                 # apo | (나중에 sirius)
   ref_checkpoint: null      # pi_ref.  반드시 지정
+  theta_init: null          # pi_theta 시작점. null 이면 ref_checkpoint (APO 원문 기본)
   labels: null              # precompute_apo_labels 의 npz (S, has_intv)
   t_stats: null             # precompute_t_stats 의 npy (m[t])
   balanced: [0.5, 0.25, 0.25]   # correct / intervention / pre-intervention
@@ -118,3 +119,12 @@ finetune:
     z0_clamp: [-5.0, 5.0]
     bc_weight: 0.0          # A1(ref_mode=epoch_frozen)이면 1 이어야 학습이 된다
     ref_mode: live          # live(A2, 우리 방식) | epoch_frozen(A1, 교수님 방식)
+    # 개입이 없던 에피소드를 expert(desirable) 로 읽는다 — APO 원문의 c_t=1.
+    # false 로 두면 배치의 절반이 lam=0 이 되고, 붙잡는 힘이 없어 학습 신호를 안 받은
+    # 시연 데이터가 3.87배 나빠졌다 [측정 2026-09-12].
+    expert_desirable: true
+    expert_mag: 1.0         # 그들의 |S| 는 0 이라 대신 쓰는 가중. 개입 청크의 중앙값 1.11
+    # batch_mean = ELBO-KTO 의 Zero Compute Baseline (상수 baseline 중 최적).
+    # mismatch = KTO 원래 방식 — 우리 실측에서 z0 가 26->462 로 폭주해 포화시켰다.
+    z0_mode: batch_mean
+    n_t: 8                  # 샘플당 시점 수. t 추첨이 MC 분산의 91%, v ∝ 1/n_t 확인

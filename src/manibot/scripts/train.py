@@ -88,12 +88,15 @@ def _build_finetune_loss(cfg, network):
         raise ValueError(
             "ref_mode=epoch_frozen(A1) 은 r 이 상수라 utility 로 gradient 가 안 간다 — "
             "bc_weight > 0 이어야 학습이 된다.")
+    lab = np.load(ft.labels)
     return APOLoss(
         ref=ref,
         m_t=torch.from_numpy(np.load(ft.t_stats)).float(),
-        chunk_S=np.load(ft.labels)["S"],
+        chunk_S=lab["S"],
+        chunk_has=lab["has_intv"] if a.expert_desirable else None,
         beta=a.beta, beta_d=a.beta_d, beta_u=a.beta_u,
-        z0_clamp=tuple(a.z0_clamp), bc_weight=a.bc_weight, ref_mode=a.ref_mode)
+        z0_clamp=tuple(a.z0_clamp), bc_weight=a.bc_weight, ref_mode=a.ref_mode,
+        expert_mag=a.expert_mag, z0_mode=a.z0_mode, n_t=a.n_t)
 
 
 def _build_ema(policy, cfg):
@@ -544,9 +547,12 @@ def train(cfg: DictConfig):
     _ft = cfg.get("finetune", None)
     if _ft is not None and _ft.get("enabled", False):
         from manibot.utils.checkpoints import load_ema_weights
-        load_model_weights(policy, _ft.ref_checkpoint, cfg.device)
-        _used = load_ema_weights(policy, _ft.ref_checkpoint, cfg.device)
-        logger.info(f"pi_theta 초기화 <- {_ft.ref_checkpoint} (EMA {'적용' if _used else '없음'})")
+        # theta_init 를 주면 pi_theta 만 거기서 출발한다 — pi_ref 는 ref_checkpoint 그대로.
+        # beta 를 바꿔 '이어서' 돌릴 때 쓴다 (기준점을 안 옮겨야 비교가 남는다).
+        _init = _ft.get("theta_init", None) or _ft.ref_checkpoint
+        load_model_weights(policy, _init, cfg.device)
+        _used = load_ema_weights(policy, _init, cfg.device)
+        logger.info(f"pi_theta 초기화 <- {_init} (EMA {'적용' if _used else '없음'})")
 
     runner = PolicyTrainer(
         cfg,

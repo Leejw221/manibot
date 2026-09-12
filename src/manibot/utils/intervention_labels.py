@@ -54,11 +54,21 @@ def relabel_preintv(action_mode, k: int = 10):
 #   (실측 선례: pre-intv 구간 길이와 판정 윈도 길이가 어긋나 목표 25% 가 실제 18.3% 였다).
 
 
-def recovery_confidence(action_mode, gamma: float = 0.95):
+def recovery_confidence(action_mode, gamma: float = 0.95, k_pre: int = 15):
     """프레임별 c(t) 를 돌려준다. action_mode: (T,) — 0=rollout, 1=intervention.
 
     개입 경계가 여러 개면 **가장 가까운 경계**를 기준으로 삼는다. 경계 사이 중간
     지점에서 두 경계의 영향이 겹치는데, 합치면 부호가 상쇄돼 뜻이 흐려진다.
+
+    **k_pre 로 음수 구간을 자른다.** 감쇠는 "얼마나 확신하나" 를 표현하는 장치지
+    "어디까지가 그 행동 탓인가" 를 정하는 장치가 아니다. 자르지 않으면 개입 5초 전의
+    평범한 행동까지 undesirable 이 되고, 실측에서 U 풀의 81% 가 개입 10프레임 밖이었다
+    (중앙값 29프레임). 그걸 밀어낸 run 의 성공률이 45% -> 36% 로 떨어졌다 [측정 2026-09-13].
+
+    k_pre=15 는 SIRIUS 의 `ell = 15` — *"human reaction time … average of 2 seconds,
+    roughly corresponding to the time of 15 robot actions"* [원문 직접 2026-09-13].
+    ⚠ SIRIUS 는 7.5Hz 이고 우리는 20fps 라, 같은 '2초' 를 옮기면 40 이 된다. 여기서는
+    숫자를 따랐다 — 먼저 "자르느냐" 를 가르고, 길이는 그다음에 정한다.
     """
     m = np.asarray(action_mode, dtype=np.int64).ravel()
     if m.size == 0:
@@ -73,16 +83,20 @@ def recovery_confidence(action_mode, gamma: float = 0.95):
     near = d[np.arange(m.size), np.abs(d).argmin(1)]
     # 지수를 **정수로 유지**한다. float 로 두면 경계를 걸친 청크에서 양·음이 마지막
     # 비트까지 상쇄되지 않아 S 가 정확히 0 이 안 된다 (실측: 39개 중 26개가 U 로 샜다).
-    return np.where(near >= 0, gamma ** near, -(gamma ** (-near - 1)))
+    c = np.where(near >= 0, gamma ** near, -(gamma ** (-near - 1)))
+    if k_pre is not None:
+        c = np.where((near < 0) & (-near > int(k_pre)), 0.0, c)
+    return c
 
 
-def chunk_scores(action_mode, horizon: int, gamma: float = 0.95, stride: int = 1):
+def chunk_scores(action_mode, horizon: int, gamma: float = 0.95, stride: int = 1,
+                 k_pre: int = 15):
     """슬라이딩 청크마다 S = sum_t c(t). 학습이 윈도를 뽑는 방식과 같게 stride=1 이 기본.
 
     반환: (starts, S) — starts 는 각 청크의 시작 프레임 인덱스.
     sign(S) 가 선호(desirable/undesirable), abs(S) 가 가중이다.
     """
-    c = recovery_confidence(action_mode, gamma)
+    c = recovery_confidence(action_mode, gamma, k_pre)
     n = c.size - horizon + 1
     if n <= 0:
         return np.zeros(0, dtype=np.int64), np.zeros(0, dtype=np.float64)
@@ -95,12 +109,28 @@ def chunk_scores(action_mode, horizon: int, gamma: float = 0.95, stride: int = 1
 PREF_TOL = 1e-9
 
 
-def preference(S, tol: float = PREF_TOL):
+def preference(S, has_intervention=None, tol: float = PREF_TOL,
+               expert_mag: float = 1.0):
     """청크 점수 S -> (sign, weight).
 
     sign: +1 desirable · -1 undesirable · 0 판정 보류(가중 0)
-    weight: |S|.  tol 미만은 선호가 없는 것으로 본다 (개입 경계를 정확히 걸친 청크).
+    weight: |S|.
+
+    **S=0 에는 성격이 다른 둘이 섞여 있다** (실측 11,273 = 11,234 + 39):
+      · 에피소드에 개입이 아예 없다 — 사람이 지켜보고도 손댈 필요가 없었다는 **정보**다.
+        APO 원문의 expert(c_t=1) 에 해당하고 desirable 로 쓴다 [원문 직접 2026-09-12].
+      · 청크가 개입 경계를 정확히 걸쳐 양·음이 상쇄됐다 — 이건 정말로 판정할 수 없다.
+
+    has_intervention 을 주면 둘을 갈라 앞을 +1 로 읽는다. |S|=0 이라 가중이 0 이 되므로
+    expert_mag 를 대신 쓴다. 안 주면 예전대로 둘 다 보류 — 그렇게 두면 배치의 절반이
+    lam=0 이 되어 붙잡는 힘이 없어지고, 학습 신호를 안 받은 시연 데이터가 3.87배
+    나빠졌다 [측정 2026-09-12].
     """
     S = np.asarray(S, dtype=np.float64)
     sign = np.where(np.abs(S) < tol, 0, np.sign(S)).astype(np.int64)
-    return sign, np.abs(S)
+    mag = np.abs(S)
+    if has_intervention is not None:
+        expert = (sign == 0) & ~np.asarray(has_intervention, dtype=bool)
+        sign = np.where(expert, 1, sign)
+        mag = np.where(expert, expert_mag, mag)
+    return sign, mag

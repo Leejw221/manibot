@@ -26,6 +26,7 @@ from manibot.policies.factory import make_policy
 @hydra.main(version_base="1.3", config_path="../configs", config_name="default_policy")
 def main(cfg):
     gamma = float(cfg.get("gamma", 0.95))
+    k_pre = int(cfg.get("k_pre", 15))
     out = cfg.get("out") or f"{cfg.task.dataset_root}/apo_labels.npz"
 
     meta, stats = create_dataset_stats(cfg)
@@ -45,7 +46,7 @@ def main(cfg):
     for e in np.unique(ep_idx):
         sel = ep_idx == e
         has_intv_ep[int(e)] = bool((mode[sel] == LABEL_INTV).any())
-        c[sel] = recovery_confidence(mode[sel], gamma)
+        c[sel] = recovery_confidence(mode[sel], gamma, k_pre)
 
     # 인덱스별 S — 데이터셋이 쓰는 바로 그 윈도로
     N = len(ds)
@@ -58,8 +59,8 @@ def main(cfg):
         has[i] = has_intv_ep[e]
 
     sign, mag = preference(S)
-    np.savez(out, S=S, has_intv=has, gamma=gamma)
-    print(f"저장: {out}   샘플 {N}")
+    np.savez(out, S=S, has_intv=has, gamma=gamma, k_pre=k_pre)
+    print(f"저장: {out}   샘플 {N}  (gamma={gamma}, k_pre={k_pre})")
     print(f"  개입 있는 에피소드의 청크 {has.sum()}  ·  없는 청크 {(~has).sum()}")
     print(f"  D {int((sign>0).sum())}  U {int((sign<0).sum())}  보류 {int((sign==0).sum())}")
     print(f"  |S| 중앙 {np.median(mag[has]):.3f}  90분위 {np.percentile(mag[has],90):.3f}")

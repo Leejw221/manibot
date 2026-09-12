@@ -32,12 +32,25 @@ __all__ = ["APOLoss"]
 
 
 class APOLoss:
-    def __init__(self, ref, m_t, chunk_S, beta=30.0, beta_d=8.0, beta_u=8.0,
-                 z0_clamp=(-5.0, 5.0), bc_weight=0.0, ref_mode="live"):
+    def __init__(self, ref, m_t, chunk_S, chunk_has=None, beta=30.0, beta_d=8.0,
+                 beta_u=8.0, z0_clamp=(-5.0, 5.0), bc_weight=0.0, ref_mode="live",
+                 expert_mag=1.0, z0_mode="batch_mean", n_t=8):
         self.ref = ref
         self.m_t = m_t
         # 샘플러가 푸는 것과 **같은 배열**. 기준이 둘이면 배치 구성이 손실에서 재현되지 않는다.
         self.chunk_S = chunk_S
+        # 개입이 없던 에피소드를 expert(desirable) 로 읽기 위한 플래그. 없으면 예전 동작.
+        self.chunk_has = chunk_has
+        self.expert_mag = expert_mag
+        # z0_mode: batch_mean = ELBO-KTO 의 Zero Compute Baseline (b0 = 배치 안 r̂ 의 평균).
+        #   상수 baseline 중 분산 최적임이 증명돼 있다 [ELBO-KTO Lemma 1, 원문 직접 2026-09-12].
+        #   mismatch = KTO 원래의 엇갈린 짝 추정. 우리 실측에서 r 과 척도가 달라 26->462 로
+        #   폭주했고 sigmoid 를 완전히 포화시켰다 [측정 2026-09-12].
+        self.z0_mode = z0_mode
+        # n_t: 샘플당 뽑는 시점 수. 우리 실측에서 t 추첨이 MC 분산의 91% 였고,
+        #   v ∝ 1/n_t 가 소수점까지 맞았다 (7838 -> 1930, 예측 4배). n_y 는 1 로 둔다
+        #   — eps 축은 분산의 1.4% 뿐 [VRPO Prop 1 + 측정 2026-09-12].
+        self.n_t = int(n_t)
         self.beta, self.beta_d, self.beta_u = beta, beta_d, beta_u
         self.z0_lo, self.z0_hi = z0_clamp
         self.bc_weight = bc_weight
@@ -79,47 +92,60 @@ class APOLoss:
         with torch.no_grad():
             cond_r, _ = prepare_cond(self.ref, batch)
 
-        # ② 같은 t·eps 를 공유한다 (다르면 r 이 노이즈 차이를 잰다)
+        # ② 같은 t·eps 를 공유한다 (antithetic sampling — VRPO 의 "free lunch").
+        #    n_t 번 뽑아 평균내면 ELBO 추정 분산이 1/n_t 로 준다.
         B = x0.shape[0]
-        t = torch.randint(0, T, (B,), device=x0.device, dtype=torch.long)
-        eps = torch.randn_like(x0)
+        se_diff, l1_acc = 0.0, 0.0
+        for _ in range(self.n_t):
+            t = torch.randint(0, T, (B,), device=x0.device, dtype=torch.long)
+            eps = torch.randn_like(x0)
+            e_the, _, _ = unet_out(m, cond_t, x0, t, eps)
+            with torch.no_grad():
+                e_ref, _, _ = unet_out(self.ref.diffusion, cond_r, x0, t, eps)
+            sq = lambda e: ((eps - e) ** 2).mean(dim=(1, 2))
+            se_diff = se_diff + (sq(e_ref) - sq(e_the))
+            # 가중치용 오차는 t 정규화 후 평균 — 그래야 "어느 t 가 뽑혔나" 가 안 섞인다
+            l1_acc = l1_acc + (eps - e_the).abs().mean(dim=(1, 2)).detach() / self.m_t.to(x0.device)[t]
 
-        eps_the, _, _ = unet_out(m, cond_t, x0, t, eps)
-        with torch.no_grad():
-            eps_ref, _, _ = unet_out(self.ref.diffusion, cond_r, x0, t, eps)
-            # ③ z0 는 **엇갈린 짝**으로. 우리 데이터는 D/U 로 일부러 고른 것이라
-            #    맞는 짝의 평균을 쓰면 기준점이 라벨에 오염된다 (KTO 원문).
-            x0_mis = x0.roll(1, 0)
-            mis_the, _, _ = unet_out(m, cond_t, x0_mis, t, eps)
-            mis_ref, _, _ = unet_out(self.ref.diffusion, cond_r, x0_mis, t, eps)
-
-        def reward(e_ref, e_the, target):
-            se_ref = ((target - e_ref) ** 2).mean(dim=(1, 2))
-            se_the = ((target - e_the) ** 2).mean(dim=(1, 2))
-            return self.beta * T * (se_ref - se_the)
-
-        r = reward(eps_ref, eps_the, eps)
-        z0 = reward(mis_ref, mis_the, eps).mean().clamp_min(0.0).clamp(self.z0_lo, self.z0_hi).detach()
+        # ③ beta 는 sigma **밖에** 둔다. r 안에 넣으면 z0 클램프·grad_clip 같은 상수가
+        #    조용히 beta 에 딸려 움직인다 (실제로 beta 1->10 에서 클램프가 10배 조여졌다).
+        r = T * se_diff / self.n_t                      # ELBO margin (beta 없음)
+        l_tilde = l1_acc / self.n_t
 
         # ④ 선호 — preference() 한 곳에서만 판정한다
         idx = batch["dataset_index"].cpu().numpy()
-        sign_np, mag_np = preference(self.chunk_S[idx])
+        has = None if self.chunk_has is None else self.chunk_has[idx]
+        sign_np, mag_np = preference(self.chunk_S[idx], has, expert_mag=self.expert_mag)
         sign = torch.as_tensor(sign_np, device=x0.device)
         mag = torch.as_tensor(mag_np, device=x0.device, dtype=x0.dtype)
 
-        l1 = (eps - eps_the).abs().mean(dim=(1, 2))
-        lam, wdiag = apo_weights(l1, t, self.m_t, sign, mag, self.beta_d, self.beta_u)
+        # ⑤ baseline
+        if self.z0_mode == "batch_mean":
+            z0_raw = r.mean().detach()
+            z0 = z0_raw
+        else:
+            mis_the, _, _ = unet_out(m, cond_t.roll(1, 0), x0, t, eps)
+            with torch.no_grad():
+                mis_ref, _, _ = unet_out(self.ref.diffusion, cond_r.roll(1, 0), x0, t, eps)
+            z0_raw = (T * (((eps - mis_ref) ** 2).mean(dim=(1, 2))
+                           - ((eps - mis_the) ** 2).mean(dim=(1, 2)))).mean().detach()
+            z0 = z0_raw.clamp_min(0.0).clamp(self.z0_lo, self.z0_hi)
 
-        u = torch.sigmoid(torch.where(sign > 0, r - z0, z0 - r))
+        lam, wdiag = apo_weights(l_tilde, None, self.m_t, sign, mag, self.beta_d, self.beta_u)
+        u = torch.sigmoid(self.beta * sign.to(r.dtype) * (r - z0))
         loss = -(lam * u).mean()
 
+        keep = sign != 0
+        n_keep = keep.sum().clamp_min(1)
+        sat = (((u < 0.05) | (u > 0.95)) & keep).sum() / n_keep
         out = {"r_mean": r.mean().item(), "r_std": r.std().item(), "z0": z0.item(),
-               "u_mean": u.mean().item(),
-               "sat_rate": (((u < 0.05) | (u > 0.95)).float().mean().item()),
-               **wdiag}
+               "z0_raw": z0_raw.item(), "u_mean": u.mean().item(), "sat_rate": sat.item(),
+               "label_frac": keep.float().mean().item(), **wdiag}
+        for nm, sel in (("r_d", sign > 0), ("r_u", sign < 0)):
+            out[nm] = r[sel].mean().item() if sel.any() else float("nan")
 
         if self.bc_weight:
-            l_bc = ((eps - eps_the) ** 2).mean()
+            l_bc = ((eps - e_the) ** 2).mean()
             loss = loss + self.bc_weight * l_bc
             out["l_bc"] = l_bc.item()
         out["apo_frac"] = 1.0 if not self.bc_weight else abs(

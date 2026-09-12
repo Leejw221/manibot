@@ -36,7 +36,8 @@ def apo_weights(l1_err, t, m_t, sign, mag, beta_d: float = 8.0, beta_u: float = 
     # ⚠ 가중치는 importance weight 다. gradient 를 흘리면 "오차를 키워 가중치를 올리는"
     #   역방향 지름길이 생긴다 — 반드시 detach.
     l = l1_err.detach()
-    l_tilde = l / m_t.to(l.device)[t]                       # t 정규화
+    # t=None 이면 호출부가 이미 t 정규화를 끝낸 값(여러 draw 평균)을 넘긴 것이다.
+    l_tilde = l if t is None else l / m_t.to(l.device)[t]
     w = l_tilde / l_tilde.sum().clamp_min(1e-12)            # 배치 정규화 (APO 원문)
 
     lam_d = 1.0 - torch.exp(-beta_d * w)
@@ -45,11 +46,12 @@ def apo_weights(l1_err, t, m_t, sign, mag, beta_d: float = 8.0, beta_u: float = 
     lam = mag * lam_apo                                      # 확신도 x 중요도
     lam = torch.where(sign == 0, torch.zeros_like(lam), lam)  # 보류 청크는 학습에서 뺀다
 
-    d = sign > 0
+    # sign==0 은 lam=0 이라 학습에 안 쓰인다. ~d 로 잡으면 lam_u_mean 에 섞여 들어온다.
+    d, u = sign > 0, sign < 0
     diag = {
         "w_max_over_mean": (w.max() / w.mean()).item(),
         "lam_d_mean": lam_d[d].mean().item() if d.any() else 0.0,
-        "lam_u_mean": lam_u[~d].mean().item() if (~d).any() else 0.0,
+        "lam_u_mean": lam_u[u].mean().item() if u.any() else 0.0,
         "lam_mean": lam.mean().item(),
     }
     return lam, diag
