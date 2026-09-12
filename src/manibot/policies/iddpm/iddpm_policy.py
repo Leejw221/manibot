@@ -25,16 +25,11 @@ import torch.nn.functional as F  # noqa: N812
 from lerobot.policies.diffusion.modeling_diffusion import (DiffusionModel, DiffusionPolicy,
                                                            _make_noise_scheduler)
 
-
-def _extract(arr: torch.Tensor, t: torch.Tensor, ndim: int) -> torch.Tensor:
-    """(T,) 계수 배열에서 배치별 t 를 뽑아 (B, 1, 1) 로 만든다."""
-    return arr.to(t.device).gather(0, t).reshape(-1, *([1] * (ndim - 1)))
-
-
-def _normal_kl(mean_q, logvar_q, mean_p, logvar_p):
-    """두 대각 가우시안 사이의 KL. 원소별로 돌려준다."""
-    return 0.5 * (logvar_p - logvar_q + torch.exp(logvar_q - logvar_p)
-                  + (mean_q - mean_p) ** 2 * torch.exp(-logvar_p) - 1.0)
+# 공통 연산은 여기 한 곳에만 둔다 (APO 손실·측정 스크립트가 같은 것을 쓴다)
+from manibot.policies.diffusion_ops import Posterior
+from manibot.policies.diffusion_ops import extract as _extract
+from manibot.policies.diffusion_ops import normal_kl as _normal_kl
+from manibot.policies.diffusion_ops import unet_out
 
 
 class IDDPMModel(DiffusionModel):
@@ -62,28 +57,15 @@ class IDDPMModel(DiffusionModel):
             prediction_type=config.prediction_type,
             variance_type="learned_range",
         )
-        # q(x_{t-1}|x_t, x_0) 의 분산·평균 계수를 미리 만들어 둔다
-        ac = self.noise_scheduler.alphas_cumprod
-        ac_prev = torch.cat([torch.ones(1, dtype=ac.dtype), ac[:-1]])
-        betas = self.noise_scheduler.betas
-        post_var = betas * (1.0 - ac_prev) / (1.0 - ac)
-        self.register_buffer("_ac", ac, persistent=False)
-        self.register_buffer("_ac_prev", ac_prev, persistent=False)
-        self.register_buffer("_betas", betas, persistent=False)
-        self.register_buffer("_log_betas", torch.log(betas), persistent=False)
-        # t=0 에서 posterior 분산이 0 이라 로그가 발산한다 — 첫 항만 t=1 값으로 채운다
-        self.register_buffer("_log_post_var",
-                             torch.log(torch.cat([post_var[1:2], post_var[1:]])), persistent=False)
-        self.register_buffer("_post_c0", betas * ac_prev.sqrt() / (1.0 - ac), persistent=False)
-        self.register_buffer("_post_ct", (1.0 - ac_prev) * self.noise_scheduler.alphas.sqrt()
-                             / (1.0 - ac), persistent=False)
+        # q(x_{t-1}|x_t, x_0) 의 계수. 공식은 diffusion_ops.Posterior 한 곳에만 있다.
+        # 버퍼로 등록하는 이유는 .to(device) 를 따라 움직여야 하기 때문이다.
+        post = Posterior(self.noise_scheduler)
+        for name, val in [("_ac", post.ac), ("_ac_prev", post.ac_prev), ("_betas", post.betas),
+                          ("_log_betas", post.log_betas), ("_log_post_var", post.log_post_var),
+                          ("_post_c0", post.c0), ("_post_ct", post.ct)]:
+            self.register_buffer(name, val, persistent=False)
 
     # ── 손실 ────────────────────────────────────────────────────────────
-    def _split(self, pred):
-        """UNet 출력 (B,T,2D) -> (eps, v).  v 는 [-1,1] 로 나와 [0,1] 로 옮긴다."""
-        eps, v = pred[..., :self.action_dim], pred[..., self.action_dim:]
-        return eps, (v + 1.0) / 2.0
-
     def _model_logvar(self, v, t):
         """Σ_θ = exp(v·log β_t + (1−v)·log β̃_t) — iDDPM Eq.15 의 보간."""
         lo = _extract(self._log_post_var, t, v.dim())
@@ -96,10 +78,7 @@ class IDDPMModel(DiffusionModel):
         eps = torch.randn_like(x0)
         t = torch.randint(0, self.noise_scheduler.config.num_train_timesteps,
                           (x0.shape[0],), device=x0.device).long()
-        xt = self.noise_scheduler.add_noise(x0, eps, t)
-
-        pred = self.unet(xt, t, global_cond=global_cond)
-        eps_pred, v = self._split(pred)
+        eps_pred, v, xt = unet_out(self, global_cond, x0, t, eps)
 
         # L_simple — 평균(=eps) 만 학습한다.  원본 DP 의 손실과 같다
         l_simple = F.mse_loss(eps_pred, eps)
