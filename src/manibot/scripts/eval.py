@@ -7,6 +7,7 @@ training come from the same code.
 """
 
 import json
+import re
 import logging
 import random
 from datetime import datetime
@@ -215,28 +216,52 @@ def _train_run_name(checkpoint):
     return None if (name is None or "${" in str(name)) else str(name)
 
 
-def _log_eval_to_wandb(cfg, checkpoint, sampler, info, eval_dir):
-    """평가 결과를 학습과 같은 프로젝트에 별도 run 으로 올린다.
+def _train_run_id(checkpoint):
+    """체크포인트를 낸 학습 run 의 wandb id. `outputs/<run>/wandb/run-<날짜>-<id>` 에서 읽는다."""
+    dirs = sorted((checkpoint.parent.parent / "wandb").glob("run-*-*"))
+    return dirs[-1].name.rsplit("-", 1)[-1] if dirs else None
 
-    학습 run 에 resume 하지 않는 이유: 같은 체크포인트를 K 여러 개로 평가하므로
-    한 run 에 섞이면 어느 수치가 어느 샘플러인지 구별이 안 된다.
+
+def _ckpt_step(checkpoint):
+    m = re.search(r"step_(\d+)", checkpoint.name)
+    return int(m.group(1)) if m else None
+
+
+def _log_eval_to_wandb(cfg, checkpoint, sampler, info, eval_dir):
+    """평가 결과를 학습 run 에 이어서 기록한다.
+
+    같은 체크포인트를 K 여러 개로 평가하므로 지표 이름에 K 를 넣고, x 축은 학습 step
+    이 아니라 `eval/ckpt_step` 을 따로 둔다 — wandb 의 내부 step 은 단조증가여야 해서
+    체크포인트를 역순으로 평가하면 그냥 버려지기 때문이다.
+    학습 run 을 못 찾으면 예전처럼 별도 run 으로 올린다.
     """
     import wandb
 
     base = _train_run_name(checkpoint) or checkpoint.parent.parent.name
-    run_name = f"{base}-eval-K{sampler.get('num_inference_steps')}"
-    run = wandb.init(
-        project=cfg.wandb.project, entity=cfg.wandb.entity, name=run_name,
-        job_type="eval", dir=str(eval_dir),
-        config={"checkpoint": str(checkpoint), "train_run": base,
-                "sampler": sampler, "n_episodes": cfg.val.eval_n_episodes,
-                "task": cfg.task.name, "seed": cfg.seed,
-                "max_steps": cfg.task.sim.max_steps},
-    )
-    run.log({f"eval/{k}": v for k, v in info["aggregated"].items()})
-    run.summary["success_episodes"] = sum(1 for e in info["per_episode"] if e["success"])
+    K = sampler.get("num_inference_steps")
+    run_id, run = _train_run_id(checkpoint), None
+    if run_id:
+        try:
+            run = wandb.init(project=cfg.wandb.project, entity=cfg.wandb.entity,
+                             id=run_id, resume="allow", dir=str(eval_dir))
+        except Exception as e:                       # 삭제된 run·권한 없음 등
+            logger.warning(f"학습 run({run_id}) 이어쓰기 실패 -> 별도 run: {e}")
+            run = None
+    if run is None:
+        run = wandb.init(project=cfg.wandb.project, entity=cfg.wandb.entity,
+                         name=f"{base}-eval-K{K}", job_type="eval", dir=str(eval_dir))
+
+    run.define_metric("eval/ckpt_step")
+    run.define_metric("eval/*", step_metric="eval/ckpt_step")
+    step = _ckpt_step(checkpoint) or 0
+    run.log({"eval/ckpt_step": step,
+             **{f"eval/K{K}/{k}": v for k, v in info["aggregated"].items()}})
+    tag = f"eval_K{K}_step{step}"
+    run.summary[f"{tag}/pc_success"] = info["aggregated"]["pc_success"]
+    run.summary[f"{tag}/n_episodes"] = cfg.val.eval_n_episodes
+    run.summary[f"{tag}/success_episodes"] = sum(1 for e in info["per_episode"] if e["success"])
     run.finish()
-    logger.info(f"wandb: {run_name}")
+    logger.info(f"wandb: {base} <- {tag}")
 
 
 def main():
