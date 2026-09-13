@@ -104,6 +104,17 @@ def evaluate(cfg: DictConfig):
     np.random.seed(cfg.seed)
     random.seed(cfg.seed)
     torch.manual_seed(cfg.seed)
+    # 시드만으로는 재현이 안 된다 — cudnn 이 타이밍으로 알고리즘을 고르면 부동소수점이
+    # 미세하게 갈리고, 폐루프 롤아웃 150~500 step 을 거치며 증폭된다. 실측: 같은
+    # 체크포인트·같은 seed 로 두 번 돌려 51.0% / 54.0%, 100개 중 35개만 일치
+    # (에피소드 0 부터 172 vs 146 step) [측정 2026-09-13].
+    if cfg.get("eval_deterministic", True):
+        torch.backends.cudnn.deterministic = True
+        torch.backends.cudnn.benchmark = False
+        torch.backends.cuda.matmul.allow_tf32 = False
+        torch.backends.cudnn.allow_tf32 = False
+        torch.use_deterministic_algorithms(True, warn_only=True)
+        logger.info("결정론 모드 (cudnn.deterministic · TF32 off)")
 
     # 학습과 같은 통계·차원을 쓴다. 체크포인트를 로드하면 그 통계가 다시 덮어쓴다
     # (정규화 버퍼가 state_dict 에 들어 있다) — 학습 때 쓰던 정규화가 그대로 복원된다.
@@ -147,6 +158,11 @@ def evaluate(cfg: DictConfig):
                 raw = raw.env
             cams = OmegaConf.to_container(cfg.task.sim.cameras, resolve=True)
             collector = _DeployCollector(cfg, raw, cams, list(cfg.task.sim.state_from))
+        _init_states = None
+        if cfg.get("init_states"):
+            import numpy as _np
+            _init_states = list(_np.load(cfg.init_states)["states"])
+            logger.info(f"고정 초기상태 {len(_init_states)}개 사용: {cfg.init_states}")
         info = eval_policy(
             env,
             make_predict_fn(policy, cfg, cfg.device,
@@ -156,6 +172,7 @@ def evaluate(cfg: DictConfig):
             action_horizon=cfg.policy.action_horizon,
             max_steps=cfg.task.sim.max_steps,
             fps=cfg.task.fps,
+            init_states=_init_states,
             videos_dir=eval_dir / "videos",
             max_episodes_rendered=cfg.val.num_viz_videos,
             video_key=image_keys[0] if image_keys else None,

@@ -120,7 +120,13 @@ class APOLoss:
         mag = torch.as_tensor(mag_np, device=x0.device, dtype=x0.dtype)
 
         # ⑤ baseline
-        if self.z0_mode == "batch_mean":
+        if self.z0_mode == "none":
+            # U 를 빼면 배치 평균 baseline 이 degenerate 하다 — 전부 D 이면
+            # sum(r - b0) = 0 이라 절반은 반드시 평균 아래고, 방향이 사라진다.
+            # z0=0 이면 u = sigma(beta*r) 로 "ref 보다 잘해라" 는 절대 기준이 된다.
+            z0_raw = torch.zeros((), device=r.device, dtype=r.dtype)
+            z0 = z0_raw
+        elif self.z0_mode == "batch_mean":
             z0_raw = r.mean().detach()
             z0 = z0_raw
         else:

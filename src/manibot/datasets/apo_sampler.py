@@ -56,10 +56,16 @@ class BalancedBatchSampler(Sampler):
         self.per = [int(round(batch_size * r)) for r in ratios]
         # 반올림 오차를 가장 큰 풀에 흡수시킨다
         self.per[int(np.argmax(ratios))] += batch_size - sum(self.per)
-        assert all(n > 0 for n in self.per), f"배치가 작아 비율을 못 맞춘다: {self.per}"
+        # 비율 0 을 허용한다 — U 를 빼는 실험(SIRIUS 의 P*(preintv)=0)에 필요하다.
+        assert any(n > 0 for n in self.per), f"모든 몫이 0 이다: {self.per}"
+        for r, n in zip(ratios, self.per):
+            assert r == 0 or n > 0, f"배치가 작아 비율을 못 맞춘다: {self.per}"
         for p, n in zip(self.pools, self.per):
-            assert len(p) >= n, f"풀({len(p)})이 배치 몫({n})보다 작다"
+            assert n == 0 or len(p) >= n, f"풀({len(p)})이 배치 몫({n})보다 작다"
+        # 몫이 0 인 풀은 에폭 기준이 될 수 없다
         self.exhaust = exhaust % len(self.pools)
+        if self.per[self.exhaust] == 0:
+            self.exhaust = max(range(len(self.per)), key=lambda k: self.per[k])
         self.seed = seed
         self.drop_last = drop_last
         self.epoch = 0
@@ -77,6 +83,8 @@ class BalancedBatchSampler(Sampler):
         for _ in range(len(self)):
             batch = []
             for k, (o, n) in enumerate(zip(order, self.per)):
+                if n == 0:
+                    continue
                 if ptr[k] + n > len(o):            # 마른 풀은 다시 섞어 이어쓴다
                     order[k] = rng.permutation(self.pools[k]); ptr[k] = 0; o = order[k]
                 batch.extend(o[ptr[k]:ptr[k] + n].tolist()); ptr[k] += n

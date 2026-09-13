@@ -125,6 +125,16 @@ class _LeRobotObsEnv:
     def reset(self):
         return self._convert(self._env.reset())
 
+    def reset_to(self, state):
+        """저장해둔 시뮬 상태로 되돌린다 — 평가를 정책 간에 정확히 짝지으려면 필요하다.
+
+        시드만으로는 초기 상태가 재현되지 않는다. 실측: 같은 seed 로 두 프로세스가
+        reset 직후 observation.state 해시가 달랐다. PYTHONHASHSEED 를 고정해도 남는데,
+        로봇 초기 관절각에 gaussian 0.02 잡음이 있고 배치 샘플러 경로도 완전히는
+        안 잡힌다 [측정 2026-09-13]. 상태를 통째로 복원하면 그 전부가 사라진다.
+        """
+        return self._convert(self._env.reset_to(state))
+
     def step(self, action):
         obs, reward, done, info = self._env.step(action)
         return self._convert(obs), reward, done, info

@@ -15,6 +15,8 @@ base_dir: ${hydra:runtime.cwd}
 output_dir: ${base_dir}/outputs/${task.name}/${policy.name}/${session}
 log_dir: ${output_dir}/logs
 checkpoint_dir: ${output_dir}/checkpoints
+init_states: null          # 저장된 시뮬 초기상태 npz. 주면 정책 간 평가가 정확히 짝지어진다
+eval_deterministic: true   # 같은 seed 로 같은 결과. cudnn 비결정성이 폐루프에서 증폭된다
 checkpoint_path: null
 eval_dir: ${output_dir}/eval
 val_dir: ${output_dir}/val

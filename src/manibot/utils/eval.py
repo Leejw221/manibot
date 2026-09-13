@@ -61,6 +61,7 @@ def _progress(env):
 
 
 def rollout_episode(env, predict_fn, obs_horizon, action_horizon, max_steps, video_key=None,
+                    init_state=None,
                     merger_name="temporal_ensemble", te_coeff=0.01,
                     async_infer=True, recorder=None, viewer=None, ep_label=""):
     """Run one episode. Returns (success, sum_reward, max_reward, steps, frames, progress).
@@ -78,6 +79,9 @@ def rollout_episode(env, predict_fn, obs_horizon, action_horizon, max_steps, vid
     from manibot.rollout.merger import make_merger
 
     obs = env.reset()
+    # 저장된 시뮬 상태가 있으면 되돌린다 — 시드만으로는 초기 상태가 재현되지 않는다
+    if init_state is not None:
+        obs = env.reset_to({"states": init_state})
     history = deque([obs] * obs_horizon, maxlen=obs_horizon)
     frames = [obs[video_key]] if video_key else None
 
@@ -155,6 +159,7 @@ def eval_policy(
     async_infer: bool = True,
     collector=None,
     viewer=None,
+    init_states=None,
 ) -> dict:
     """Roll out `n_episodes` and aggregate.
 
@@ -168,9 +173,11 @@ def eval_policy(
         record = videos_dir is not None and video_key is not None and ep < max_episodes_rendered
         if collector is not None:
             collector.start(ep)
+
         success, sum_r, max_r, steps, frames, prog = rollout_episode(
             env, predict_fn, obs_horizon, action_horizon, max_steps,
             video_key=video_key if record else None,
+            init_state=None if init_states is None else init_states[ep % len(init_states)],
             merger_name=merger_name, te_coeff=te_coeff, async_infer=async_infer,
             recorder=collector.record if collector is not None else None,
             viewer=viewer, ep_label=f"ep{ep} ",
