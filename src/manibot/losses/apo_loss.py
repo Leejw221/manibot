@@ -21,6 +21,7 @@
 **0.81배**였다. RNG 상태를 되감아 같은 크롭을 쓰게 하고, 시작 시 카나리아로 검사한다.
 """
 
+import numpy as np
 import torch
 
 from manibot.policies.diffusion_ops import prepare_cond, unet_out
@@ -34,7 +35,7 @@ __all__ = ["APOLoss"]
 class APOLoss:
     def __init__(self, ref, m_t, chunk_S, chunk_has=None, beta=30.0, beta_d=8.0,
                  beta_u=8.0, z0_clamp=(-5.0, 5.0), bc_weight=0.0, ref_mode="live",
-                 expert_mag=1.0, z0_mode="batch_mean", n_t=8):
+                 expert_mag=1.0, z0_mode="batch_mean", n_t=8, use_mag=True):
         self.ref = ref
         self.m_t = m_t
         # 샘플러가 푸는 것과 **같은 배열**. 기준이 둘이면 배치 구성이 손실에서 재현되지 않는다.
@@ -42,6 +43,9 @@ class APOLoss:
         # 개입이 없던 에피소드를 expert(desirable) 로 읽기 위한 플래그. 없으면 예전 동작.
         self.chunk_has = chunk_has
         self.expert_mag = expert_mag
+        # mag = |S| 는 APO 원문에 없는 우리 추가물이다. false 면 1 로 두고 부호만 쓴다
+        # — kappa 측정에서 초기 업데이트의 48.8% 를 개입직전에 몰아주고 있었다 [2026-09-13].
+        self.use_mag = use_mag
         # z0_mode: batch_mean = ELBO-KTO 의 Zero Compute Baseline (b0 = 배치 안 r̂ 의 평균).
         #   상수 baseline 중 분산 최적임이 증명돼 있다 [ELBO-KTO Lemma 1, 원문 직접 2026-09-12].
         #   mismatch = KTO 원래의 엇갈린 짝 추정. 우리 실측에서 r 과 척도가 달라 26->462 로
@@ -117,6 +121,8 @@ class APOLoss:
         has = None if self.chunk_has is None else self.chunk_has[idx]
         sign_np, mag_np = preference(self.chunk_S[idx], has, expert_mag=self.expert_mag)
         sign = torch.as_tensor(sign_np, device=x0.device)
+        if not self.use_mag:
+            mag_np = np.ones_like(mag_np)
         mag = torch.as_tensor(mag_np, device=x0.device, dtype=x0.dtype)
 
         # ⑤ baseline

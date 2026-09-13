@@ -96,7 +96,8 @@ def _build_finetune_loss(cfg, network):
         chunk_has=lab["has_intv"] if a.expert_desirable else None,
         beta=a.beta, beta_d=a.beta_d, beta_u=a.beta_u,
         z0_clamp=tuple(a.z0_clamp), bc_weight=a.bc_weight, ref_mode=a.ref_mode,
-        expert_mag=a.expert_mag, z0_mode=a.z0_mode, n_t=a.n_t)
+        expert_mag=a.expert_mag, z0_mode=a.z0_mode, n_t=a.n_t,
+        use_mag=a.get("use_mag", True))
 
 
 def _build_ema(policy, cfg):
