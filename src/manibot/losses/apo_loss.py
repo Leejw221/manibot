@@ -36,7 +36,8 @@ class APOLoss:
     def __init__(self, ref, m_t, chunk_S, chunk_has=None, beta=30.0, beta_d=8.0,
                  beta_u=8.0, z0_clamp=(-5.0, 5.0), bc_weight=0.0, ref_mode="live",
                  expert_mag=1.0, z0_mode="batch_mean", n_t=8, use_mag=True,
-                 mask_gripper_u=True, gripper_dim=-1, undesirable_weight=1.0):
+                 mask_gripper_u=True, gripper_dim=-1, undesirable_weight=1.0,
+                 z0_min=None):
         self.ref = ref
         self.m_t = m_t
         # 샘플러가 푸는 것과 **같은 배열**. 기준이 둘이면 배치 구성이 손실에서 재현되지 않는다.
@@ -54,6 +55,12 @@ class APOLoss:
         # 배치 구성은 그대로 두므로(4/2/2) 바뀌는 것이 하나뿐이다. 대신 유효 배치가
         # 8 -> 6 으로 준다 (옛 프로젝트 8-A 와 같은 내재된 부작용).
         self.undesirable_weight = undesirable_weight
+        # z0 하한. batch_mean 은 U 에 끌려 음수로 내려가고(R2 최대 -25.5), 그러면
+        # desirable 이 ref 보다 나빠도(r<0) "이겼다" 로 판정된다.
+        # ⚠ 이건 KL 복원이 아니다 — 우리 z0 는 T x MSE 차이지 KL 이 아니고, 원문의
+        #   clamp(-5,5) 도 음수를 막지 않는다 [원문 코드 직접 2026-09-15].
+        #   **설계 선택**이다: 기준점이 "ref 대비 개선량 0" 아래로 안 내려가게 한다.
+        self.z0_min = z0_min
         # z0_mode: batch_mean = ELBO-KTO 의 Zero Compute Baseline (b0 = 배치 안 r̂ 의 평균).
         #   상수 baseline 중 분산 최적임이 증명돼 있다 [ELBO-KTO Lemma 1, 원문 직접 2026-09-12].
         #   mismatch = KTO 원래의 엇갈린 짝 추정. 우리 실측에서 r 과 척도가 달라 26->462 로
@@ -174,6 +181,8 @@ class APOLoss:
                            - ((eps - mis_the) ** 2).mean(dim=(1, 2)))).mean().detach()
             z0 = z0_raw.clamp_min(0.0).clamp(self.z0_lo, self.z0_hi)
 
+        if self.z0_min is not None:
+            z0 = z0.clamp_min(self.z0_min)
         lam, wdiag = apo_weights(l_tilde, None, self.m_t, sign, mag, self.beta_d, self.beta_u)
         if self.undesirable_weight != 1.0:
             lam = torch.where(sign < 0, lam * self.undesirable_weight, lam)
