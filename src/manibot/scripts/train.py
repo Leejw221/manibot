@@ -66,6 +66,12 @@ def _build_finetune_loss(cfg, network):
     if ft is None or not ft.get("enabled", False):
         return None
 
+    # bc = APO 를 전부 뺀 대조군. 손실 객체를 만들지 않으면 train_step 이 정책의 기본
+    # BC(network.forward)로 돌아간다. theta_init 초기화와 balanced 샘플러는 그대로
+    # 쓰이므로 **개입 데이터 유무만 다른 짝**을 만들 수 있다 — 그 차이가 개입 데이터의 효과다.
+    if ft.loss == "bc":
+        return None
+
     import numpy as np
 
     from manibot.losses.apo_loss import APOLoss
@@ -73,7 +79,7 @@ def _build_finetune_loss(cfg, network):
     from manibot.utils.dataset_utils import create_dataset_stats
     from manibot.utils.task_utils import derive_task_meta
 
-    assert ft.loss == "apo", f"finetune.loss={ft.loss!r} 미지원"
+    assert ft.loss == "apo", f"finetune.loss={ft.loss!r} 미지원 (apo | bc)"
     for k in ("ref_checkpoint", "labels", "t_stats"):
         assert ft.get(k), f"finetune.{k} 를 지정해야 한다"
 
@@ -97,7 +103,9 @@ def _build_finetune_loss(cfg, network):
         beta=a.beta, beta_d=a.beta_d, beta_u=a.beta_u,
         z0_clamp=tuple(a.z0_clamp), bc_weight=a.bc_weight, ref_mode=a.ref_mode,
         expert_mag=a.expert_mag, z0_mode=a.z0_mode, n_t=a.n_t,
-        use_mag=a.get("use_mag", True))
+        use_mag=a.get("use_mag", True),
+        mask_gripper_u=a.get("mask_gripper_u", True),
+        gripper_dim=a.get("gripper_dim", -1))
 
 
 def _build_ema(policy, cfg):

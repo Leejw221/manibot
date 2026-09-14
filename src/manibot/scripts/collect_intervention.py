@@ -144,6 +144,8 @@ def collect(cfg: DictConfig):
                     f"합친 데이터셋 demo 비율 {1.0 / (1.0 + cfg.round_size_ratio):.0%})")
     ep_success = dd.read_success(ds.root)
     kept0 = len(ep_success)
+    # 이어받기 — 기존 sim_states 를 읽어 길이를 맞춘다(없으면 None 으로 채운다).
+    ep_init_states, ep_intv_states, ep_intv_steps = _read_states(ds.root, kept0)
     round_frames = int(getattr(ds, "num_frames", 0) or 0)     # 이어받은 분량부터 센다
     intv_frames = 0
     logger.info(f"저장: {ds.root} (repo_id={cfg.repo_id})\n키: {HELP}")
@@ -166,6 +168,15 @@ def collect(cfg: DictConfig):
             break
         obs = env.reset()
         trig.reset_episode()
+        # **초기 시뮬 상태**를 남긴다. 라운드 1 에는 이게 없어서 "수집했던 그 상황"에서
+        # 다시 평가할 수가 없었고, 개입을 못 배운 것인지 그 상태에 도달을 못 한 것인지
+        # 갈라내지 못했다 [2026-09-14]. 실패해도 수집은 계속한다.
+        try:
+            init_state = np.asarray(raw.sim.get_state().flatten(), dtype=np.float64)
+        except Exception as e:                                   # noqa: BLE001
+            init_state = None
+            logger.warning(f"초기 상태 저장 실패: {e}")
+        intv_state, intv_step = None, -1
         hist = deque([obs] * obs_h, maxlen=obs_h)
         if viewer is not None:
             viewer.reset_clock()
@@ -191,6 +202,13 @@ def collect(cfg: DictConfig):
             if trig.intervening:
                 # 개입 켠 순간 **현재 상태에서** 다시 계획한다 (전문가가 재진입한다)
                 if expert is None:
+                    if intv_state is None:                       # 첫 개입 시작 지점만
+                        try:
+                            intv_state = np.asarray(
+                                raw.sim.get_state().flatten(), dtype=np.float64)
+                            intv_step = step
+                        except Exception:                        # noqa: BLE001
+                            pass
                     # ⚠ 개입 교정에는 **다양성을 넣지 않는다**. 시연은 다양해야 정책이
                     # 넓게 배우지만, 교정은 확실해야 한다 — 실패한 교정이 c=2 로 들어가면
                     # "실패로 이어진 행동" 라벨이 오염된다.
@@ -246,6 +264,9 @@ def collect(cfg: DictConfig):
         # 부모에서 fork 하는 구조라 워커가 죽는 일이 있다. False 면 풀 없이 차례로 인코딩한다.
         ds.save_episode(parallel_encoding=bool(cfg.parallel_encoding))
         ep_success.append(bool(success))
+        ep_init_states.append(init_state)
+        ep_intv_states.append(intv_state)
+        ep_intv_steps.append(intv_step)
         kept += 1
         round_frames += len(frames)
         intv_frames += n_i
@@ -258,11 +279,13 @@ def collect(cfg: DictConfig):
             ds.finalize()                  # 여기까지는 죽어도 남는다
             # 성공 목록도 여기서만 쓴다 — 매번 쓰면 못 읽는 에피소드까지 세어 어긋난다
             dd.write_success(ds.root, ep_success)
+            _write_states(ds.root, ep_init_states, ep_intv_states, ep_intv_steps)
             ds = _open()
 
     # finalize() 를 빠뜨리면 잘린 parquet 이 남는다 — save_episode 가 백그라운드로 쓴다.
     ds.finalize()
     dd.write_success(ds.root, ep_success)
+    _write_states(ds.root, ep_init_states, ep_intv_states, ep_intv_steps)
     if pool is not None:
         pool.shutdown(wait=False, cancel_futures=True)
     trig.stop()
@@ -270,6 +293,43 @@ def collect(cfg: DictConfig):
         viewer.close()
     logger.info(f"수집 완료: {kept} 에피소드 · 성공 {sum(ep_success)}/{len(ep_success)} "
                 f"-> {ds.root}")
+
+
+
+# ── 시뮬 상태 기록 ─────────────────────────────────────────────────────────
+# `init` = env.reset() 직후 상태 — "같은 초기 상황"에서 재평가하려면 이게 필요하다.
+# `intv` = **첫 개입 시작 직전** 상태 — 회복 구간만 떼어 평가하려면 init 만으로는 안 된다.
+# LeRobotDataset 스키마는 안 건드린다 — 실물 데이터와 형식이 갈리면 안 되므로 별도 npz.
+
+def _pack_states(xs):
+    d = next((x.size for x in xs if x is not None), 0)
+    if d == 0:
+        return np.zeros((len(xs), 0)), np.zeros(len(xs), dtype=bool)
+    a, ok = np.full((len(xs), d), np.nan), np.zeros(len(xs), dtype=bool)
+    for i, x in enumerate(xs):
+        if x is not None and x.size == d:
+            a[i], ok[i] = x, True
+    return a, ok
+
+
+def _write_states(root, inits, intvs, steps):
+    ia, iok = _pack_states(inits)
+    va, vok = _pack_states(intvs)
+    np.savez(Path(root) / "sim_states.npz", init=ia, init_ok=iok,
+             intv=va, intv_ok=vok, intv_step=np.asarray(steps, dtype=np.int64))
+
+
+def _read_states(root, n):
+    """이어받기용. 길이가 n 이 되게 앞을 채워 돌려준다."""
+    f = Path(root) / "sim_states.npz"
+    if n == 0 or not f.exists():
+        return [None] * n, [None] * n, [-1] * n
+    d = np.load(f)
+    ini = [d["init"][i] if d["init_ok"][i] else None for i in range(len(d["init_ok"]))]
+    itv = [d["intv"][i] if d["intv_ok"][i] else None for i in range(len(d["intv_ok"]))]
+    stp = list(d["intv_step"])
+    pad = n - len(ini)
+    return (ini + [None] * pad)[:n], (itv + [None] * pad)[:n], (stp + [-1] * pad)[:n]
 
 
 def main():

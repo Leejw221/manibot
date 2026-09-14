@@ -35,7 +35,8 @@ __all__ = ["APOLoss"]
 class APOLoss:
     def __init__(self, ref, m_t, chunk_S, chunk_has=None, beta=30.0, beta_d=8.0,
                  beta_u=8.0, z0_clamp=(-5.0, 5.0), bc_weight=0.0, ref_mode="live",
-                 expert_mag=1.0, z0_mode="batch_mean", n_t=8, use_mag=True):
+                 expert_mag=1.0, z0_mode="batch_mean", n_t=8, use_mag=True,
+                 mask_gripper_u=True, gripper_dim=-1):
         self.ref = ref
         self.m_t = m_t
         # 샘플러가 푸는 것과 **같은 배열**. 기준이 둘이면 배치 구성이 손실에서 재현되지 않는다.
@@ -46,6 +47,9 @@ class APOLoss:
         # mag = |S| 는 APO 원문에 없는 우리 추가물이다. false 면 1 로 두고 부호만 쓴다
         # — kappa 측정에서 초기 업데이트의 48.8% 를 개입직전에 몰아주고 있었다 [2026-09-13].
         self.use_mag = use_mag
+        # U 의 reward 에서 뺄 행동 차원(기본 = 마지막 = gripper). 근거는 __call__ ③ 주석.
+        self.mask_gripper_u = mask_gripper_u
+        self.gripper_dim = gripper_dim
         # z0_mode: batch_mean = ELBO-KTO 의 Zero Compute Baseline (b0 = 배치 안 r̂ 의 평균).
         #   상수 baseline 중 분산 최적임이 증명돼 있다 [ELBO-KTO Lemma 1, 원문 직접 2026-09-12].
         #   mismatch = KTO 원래의 엇갈린 짝 추정. 우리 실측에서 r 과 척도가 달라 26->462 로
@@ -96,27 +100,8 @@ class APOLoss:
         with torch.no_grad():
             cond_r, _ = prepare_cond(self.ref, batch)
 
-        # ② 같은 t·eps 를 공유한다 (antithetic sampling — VRPO 의 "free lunch").
-        #    n_t 번 뽑아 평균내면 ELBO 추정 분산이 1/n_t 로 준다.
-        B = x0.shape[0]
-        se_diff, l1_acc = 0.0, 0.0
-        for _ in range(self.n_t):
-            t = torch.randint(0, T, (B,), device=x0.device, dtype=torch.long)
-            eps = torch.randn_like(x0)
-            e_the, _, _ = unet_out(m, cond_t, x0, t, eps)
-            with torch.no_grad():
-                e_ref, _, _ = unet_out(self.ref.diffusion, cond_r, x0, t, eps)
-            sq = lambda e: ((eps - e) ** 2).mean(dim=(1, 2))
-            se_diff = se_diff + (sq(e_ref) - sq(e_the))
-            # 가중치용 오차는 t 정규화 후 평균 — 그래야 "어느 t 가 뽑혔나" 가 안 섞인다
-            l1_acc = l1_acc + (eps - e_the).abs().mean(dim=(1, 2)).detach() / self.m_t.to(x0.device)[t]
-
-        # ③ beta 는 sigma **밖에** 둔다. r 안에 넣으면 z0 클램프·grad_clip 같은 상수가
-        #    조용히 beta 에 딸려 움직인다 (실제로 beta 1->10 에서 클램프가 10배 조여졌다).
-        r = T * se_diff / self.n_t                      # ELBO margin (beta 없음)
-        l_tilde = l1_acc / self.n_t
-
-        # ④ 선호 — preference() 한 곳에서만 판정한다
+        # ② 선호 — preference() 한 곳에서만 판정한다.  **오차 계산보다 먼저** 구한다:
+        #    U 의 reward 에서 gripper 차원을 빼려면 sq() 안에서 부호를 알아야 하기 때문이다.
         idx = batch["dataset_index"].cpu().numpy()
         has = None if self.chunk_has is None else self.chunk_has[idx]
         sign_np, mag_np = preference(self.chunk_S[idx], has, expert_mag=self.expert_mag)
@@ -124,6 +109,40 @@ class APOLoss:
         if not self.use_mag:
             mag_np = np.ones_like(mag_np)
         mag = torch.as_tensor(mag_np, device=x0.device, dtype=x0.dtype)
+
+        # ③ gripper 마스크 — U 의 reward 에서 gripper 차원을 뺀다.
+        #    gripper 는 거의 열림/닫힘 이진이라 같은 값이 D 와 U 에 함께 나타난다. U 를 밀면
+        #    정상 gripper 행동까지 같이 밀린다.  e_ref 와 e_theta 에 **똑같이** 걸어야 r 이
+        #    공정한 차로 남고, 유효 원소 수로 나눠야 D 와 척도가 맞는다.
+        #    ⚠ 출처: APO **공개 코드에는 없다** — rejected 의 `[:, :-1]` 은 gripper 가 아니라
+        #      stop 토큰을 뺀다(labels 는 action 7토큰 + stop, predict_stop_token 기본 True)
+        #      [코드 원문 직접 2026-09-14]. 논문 Appendix C 의 gripper 서술은 미확인.
+        #      즉 이건 원문 이식이 아니라 **우리 설계 판단**이다.
+        B, H, A = x0.shape
+        dmask = torch.ones(B, 1, A, device=x0.device, dtype=x0.dtype)
+        if self.mask_gripper_u:
+            dmask[sign < 0, :, self.gripper_dim] = 0.0
+        n_eff = dmask.sum(dim=2).squeeze(1) * H          # 샘플별 유효 원소 수
+
+        # ④ 같은 t·eps 를 공유한다 (antithetic sampling — VRPO 의 "free lunch").
+        #    n_t 번 뽑아 평균내면 ELBO 추정 분산이 1/n_t 로 준다.
+        se_diff, l1_acc = 0.0, 0.0
+        for _ in range(self.n_t):
+            t = torch.randint(0, T, (B,), device=x0.device, dtype=torch.long)
+            eps = torch.randn_like(x0)
+            e_the, _, _ = unet_out(m, cond_t, x0, t, eps)
+            with torch.no_grad():
+                e_ref, _, _ = unet_out(self.ref.diffusion, cond_r, x0, t, eps)
+            sq = lambda e: (((eps - e) ** 2) * dmask).sum(dim=(1, 2)) / n_eff
+            se_diff = se_diff + (sq(e_ref) - sq(e_the))
+            # 가중치용 오차에는 마스크를 안 건다 — APO 의 adaptive weight 는 7차원 전부의 L1 이다
+            # (ddp_robotic_trainer.py L294, action_space=7) [코드 원문 직접 2026-09-14].
+            l1_acc = l1_acc + (eps - e_the).abs().mean(dim=(1, 2)).detach() / self.m_t.to(x0.device)[t]
+
+        # ③ beta 는 sigma **밖에** 둔다. r 안에 넣으면 z0 클램프·grad_clip 같은 상수가
+        #    조용히 beta 에 딸려 움직인다 (실제로 beta 1->10 에서 클램프가 10배 조여졌다).
+        r = T * se_diff / self.n_t                      # ELBO margin (beta 없음)
+        l_tilde = l1_acc / self.n_t
 
         # ⑤ baseline
         if self.z0_mode == "none":
