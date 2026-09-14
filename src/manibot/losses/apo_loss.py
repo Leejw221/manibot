@@ -135,6 +135,14 @@ class APOLoss:
         elif self.z0_mode == "batch_mean":
             z0_raw = r.mean().detach()
             z0 = z0_raw
+        elif self.z0_mode == "desirable_mean":
+            # 배치 평균은 U 에 납치된다 — 개입직전의 r 이 -60 까지 내려가 z0 를 -11 로
+            # 끌어내리고, 그러면 desirable 이 ref 보다 나빠도(r<0) "이겼다"로 판정된다.
+            # 실측(8k, 128배치): 개입 0-29 의 4u(1-u) 중앙값이 0.0002 까지 죽어 있었고,
+            # z0 를 desirable 기준으로 되돌리면 그 샘플들의 kappa 가 173배가 된다 [2026-09-14].
+            d = sign > 0
+            z0_raw = (r[d].mean() if d.any() else r.mean()).detach()
+            z0 = z0_raw
         else:
             mis_the, _, _ = unet_out(m, cond_t.roll(1, 0), x0, t, eps)
             with torch.no_grad():
