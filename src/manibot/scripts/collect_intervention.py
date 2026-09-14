@@ -107,6 +107,15 @@ def collect(cfg: DictConfig):
     env = make_eval_env(cfg.task)
     raw = _raw(env)
     seed_sim_env(raw, cfg.seed)
+    # **배포 집합 D** — 라운드마다 같은 초기상태에서 배포해야 개입률을 라운드 간에 비교할 수
+    # 있다. 시드만으로는 초기 상태가 재현되지 않는다(gen_init_states 문서: 같은 시드로 두 번
+    # 돌려 100개 중 35개만 일치) [2026-09-15].
+    # ⚠ **평가 집합과 겹치면 안 된다** — 학습이 평가 초기상태를 보게 되어 성장이 아니라
+    #   암기를 재게 된다.
+    _init_states = None
+    if cfg.get("init_states"):
+        _init_states = list(np.load(cfg.init_states)["states"])
+        logger.info(f"고정 초기상태 {len(_init_states)}개 사용: {cfg.init_states}")
     Expert = resolve(cfg.task.sim.expert)
     low_dim = list(cfg.task.sim.state_from)
     # robosuite 카메라 이름 -> 우리 관측 이름. LeRobot 특징 이름이 이 매핑을 그대로 쓴다
@@ -167,6 +176,11 @@ def collect(cfg: DictConfig):
             logger.info(f"[중단] 에피소드 상한 {cfg.n_episodes} 도달")
             break
         obs = env.reset()
+        if _init_states is not None:
+            # kept0+kept = 지금까지 **보관한** 에피소드 수 = 다음에 쓸 D 의 인덱스.
+            # 폐기(r)해도 전진하지 않으므로 같은 상황을 다시 찍게 된다 — 라운드마다
+            # D 를 똑같이 덮으려면 그래야 한다.
+            obs = env.reset_to({"states": _init_states[(kept0 + kept) % len(_init_states)]})
         trig.reset_episode()
         # **초기 시뮬 상태**를 남긴다. 라운드 1 에는 이게 없어서 "수집했던 그 상황"에서
         # 다시 평가할 수가 없었고, 개입을 못 배운 것인지 그 상태에 도달을 못 한 것인지
