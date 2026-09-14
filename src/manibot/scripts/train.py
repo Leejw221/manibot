@@ -105,7 +105,8 @@ def _build_finetune_loss(cfg, network):
         expert_mag=a.expert_mag, z0_mode=a.z0_mode, n_t=a.n_t,
         use_mag=a.get("use_mag", True),
         mask_gripper_u=a.get("mask_gripper_u", True),
-        gripper_dim=a.get("gripper_dim", -1))
+        gripper_dim=a.get("gripper_dim", -1),
+        undesirable_weight=a.get("undesirable_weight", 1.0))
 
 
 def _build_ema(policy, cfg):

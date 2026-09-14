@@ -36,7 +36,7 @@ class APOLoss:
     def __init__(self, ref, m_t, chunk_S, chunk_has=None, beta=30.0, beta_d=8.0,
                  beta_u=8.0, z0_clamp=(-5.0, 5.0), bc_weight=0.0, ref_mode="live",
                  expert_mag=1.0, z0_mode="batch_mean", n_t=8, use_mag=True,
-                 mask_gripper_u=True, gripper_dim=-1):
+                 mask_gripper_u=True, gripper_dim=-1, undesirable_weight=1.0):
         self.ref = ref
         self.m_t = m_t
         # 샘플러가 푸는 것과 **같은 배열**. 기준이 둘이면 배치 구성이 손실에서 재현되지 않는다.
@@ -50,6 +50,10 @@ class APOLoss:
         # U 의 reward 에서 뺄 행동 차원(기본 = 마지막 = gripper). 근거는 __call__ ③ 주석.
         self.mask_gripper_u = mask_gripper_u
         self.gripper_dim = gripper_dim
+        # 0 이면 U 가 손실에 기여하지 않는다 — **밀어내기를 끄는 진단용**.
+        # 배치 구성은 그대로 두므로(4/2/2) 바뀌는 것이 하나뿐이다. 대신 유효 배치가
+        # 8 -> 6 으로 준다 (옛 프로젝트 8-A 와 같은 내재된 부작용).
+        self.undesirable_weight = undesirable_weight
         # z0_mode: batch_mean = ELBO-KTO 의 Zero Compute Baseline (b0 = 배치 안 r̂ 의 평균).
         #   상수 baseline 중 분산 최적임이 증명돼 있다 [ELBO-KTO Lemma 1, 원문 직접 2026-09-12].
         #   mismatch = KTO 원래의 엇갈린 짝 추정. 우리 실측에서 r 과 척도가 달라 26->462 로
@@ -171,6 +175,8 @@ class APOLoss:
             z0 = z0_raw.clamp_min(0.0).clamp(self.z0_lo, self.z0_hi)
 
         lam, wdiag = apo_weights(l_tilde, None, self.m_t, sign, mag, self.beta_d, self.beta_u)
+        if self.undesirable_weight != 1.0:
+            lam = torch.where(sign < 0, lam * self.undesirable_weight, lam)
         u = torch.sigmoid(self.beta * sign.to(r.dtype) * (r - z0))
         loss = -(lam * u).mean()
 
