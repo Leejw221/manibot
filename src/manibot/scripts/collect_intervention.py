@@ -107,11 +107,11 @@ def collect(cfg: DictConfig):
     env = make_eval_env(cfg.task)
     raw = _raw(env)
     seed_sim_env(raw, cfg.seed)
-    # **배포 집합 D** — 라운드마다 같은 초기상태에서 배포해야 개입률을 라운드 간에 비교할 수
-    # 있다. 시드만으로는 초기 상태가 재현되지 않는다(gen_init_states 문서: 같은 시드로 두 번
-    # 돌려 100개 중 35개만 일치) [2026-09-15].
-    # ⚠ **평가 집합과 겹치면 안 된다** — 학습이 평가 초기상태를 보게 되어 성장이 아니라
-    #   암기를 재게 된다.
+    # 초기상태 고정 — **개입률 측정 전용**이다. 학습 데이터 수집은 무작위로 둔다(정책이
+    # 어떤 상황에서 실패하는지 넓게 찾아야 한다) [사용자 결정 2026-09-15].
+    # 시드만으로는 초기 상태가 재현되지 않으므로(gen_init_states 문서: 같은 시드로 두 번
+    # 돌려 100개 중 35개만 일치) 상태를 통째로 되돌린다.
+    # ⚠ 측정 집합은 평가 집합과 겹치면 안 된다.
     _init_states = None
     if cfg.get("init_states"):
         _init_states = list(np.load(cfg.init_states)["states"])

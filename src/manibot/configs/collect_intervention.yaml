@@ -34,13 +34,20 @@ parallel_encoding: false
 # ⚠ APO 의 c=0(개입 직전 K 프레임)은 여기서 만들지 않는다 —
 #    학습 직전에 utils/intervention_labels.relabel_preintv(mode, k) 로 만든다.
 use_ema: true
-# 배포 집합 D — 라운드마다 **같은 초기상태**에서 배포하려면 지정한다. null 이면 매번 새로 뽑는다.
-#   만들기: python -m manibot.scripts.gen_init_states task=square_ph50 +n=80 \
-#             +out=data/deploy_init_states_80.npz
-#   ⚠ **평가 집합(eval_init_states_*.npz)과 겹치면 안 된다** — 학습이 평가 초기상태를
-#     보게 되어 일반화가 아니라 암기를 재게 된다.
-#   ⚠ 이걸 쓸 땐 round_size_ratio 를 null 로 두고 n_episodes=|D| 로 두는 편이 낫다 —
-#     프레임 목표로 끊으면 라운드마다 D 의 다른 앞부분만 덮어 비교가 다시 깨진다.
+# 초기상태를 고정한다. **학습 데이터 수집에는 쓰지 않는다** — 수집은 무작위여야
+# 이 정책이 어떤 상황에서 실패하는지 넓게 찾는다 (라운드마다 같은 상황만 반복하면
+# 커버리지가 안 는다) [사용자 결정 2026-09-15].
+#
+# 쓰는 곳은 **개입률 측정**이다. 같은 고정 집합에서 매 라운드 재야 라운드 간 비교가 된다:
+#   python -m manibot.scripts.collect_intervention task=square_ph50 \
+#     checkpoint_path=<정책> init_states=data/intv_eval_states_50.npz \
+#     n_episodes=50 round_size_ratio=null repo_id=... root=<버릴 곳>
+#   -> 로그의 "개입 xx%" 가 지표. 이 데이터는 학습에 넣지 않는다.
+#
+#   ⚠ 측정 집합은 평가 집합(eval_init_states_*.npz)과 겹치면 안 된다.
+#     data/intv_eval_states_50.npz 는 seed 7 로 만들어 E(seed 42)와 완전일치 0건 확인.
+#   ⚠ 남는 교란: **사람이 언제 i 를 누르는가**. 상태를 고정해도 이건 안 통제된다.
+#     같은 날 연속으로 재서 줄이는 수밖에 없다.
 init_states: null
 # 실시간 창. Wayland 라 pynput 전역 캡처가 안 되므로 **이 창이 조작면**이다 —
 # 창에 포커스를 두고 i/n/r/s/q 를 누른다.
