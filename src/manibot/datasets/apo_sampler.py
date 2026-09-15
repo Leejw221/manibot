@@ -22,8 +22,14 @@ from torch.utils.data import Sampler
 __all__ = ["BalancedBatchSampler", "split_pools"]
 
 
-def split_pools(sign, has_intervention, allowed=None):
+def split_pools(sign, has_intervention, allowed=None, is_demo=None):
     """(sign, has_intervention) -> (correct, intervention, incorrect) 인덱스 배열 셋.
+
+    is_demo 를 주면 correct 를 **(시연, 정책 롤아웃)** 으로 쪼개 넷을 돌려준다.
+    왜 쪼개나: correct 안의 시연 비율이 라운드마다 떨어진다(66% -> 55%). 배치 몫을
+    correct 통째로 주면 **라운드가 갈수록 시연 노출이 줄고**, 실측에서 기존 시연 적합
+    손실이 sf(잃은 성공)와 같이 움직였다 [2026-09-15: 기존 e_th +11% -> sf 17,
+    +90% -> sf 39]. 시연에 고정 할당량을 주면 그 축이 라운드와 무관해진다.
 
     sign: (N,) `preference()` 가 낸 부호. has_intervention: (N,) 그 청크가 속한
     에피소드에 개입이 있었는지. 개입이 없는 데이터(시연·개입없음 롤아웃)는 S=0 이라
@@ -36,10 +42,15 @@ def split_pools(sign, has_intervention, allowed=None):
     ok = np.ones(len(sign), dtype=bool)
     if allowed is not None:
         ok[:] = False; ok[np.asarray(allowed)] = True
-    correct = np.where(ok & ~has)[0]
     inter = np.where(ok & has & (sign > 0))[0]
     incorr = np.where(ok & has & (sign < 0))[0]
-    return correct, inter, incorr          # sign==0 인 보류 청크는 어디에도 안 들어간다
+    if is_demo is None:
+        correct = np.where(ok & ~has)[0]
+        return correct, inter, incorr      # sign==0 인 보류 청크는 어디에도 안 들어간다
+    d = np.asarray(is_demo, dtype=bool)
+    demo = np.where(ok & ~has & d)[0]
+    rollout = np.where(ok & ~has & ~d)[0]
+    return demo, rollout, inter, incorr
 
 
 class BalancedBatchSampler(Sampler):

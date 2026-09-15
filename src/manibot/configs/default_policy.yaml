@@ -114,6 +114,10 @@ finetune:
   labels: null              # precompute_apo_labels 의 npz (S, has_intv)
   t_stats: null             # precompute_t_stats 의 npy (m[t])
   balanced: [0.5, 0.25, 0.25]   # correct / intervention / pre-intervention
+                                # n_demo_episodes 를 주면 길이 4:
+                                #   시연 / 정책 롤아웃 / 개입 / 개입직전
+  n_demo_episodes: null         # 앞 N 개 에피소드를 '시연' 으로 따로 뗀다(ph50 이면 50).
+                                # null 이면 지금까지의 3풀 동작 그대로.
   apo:
     beta: 30.0              # 측정 기반 (초기 포화율 <20%)
     beta_d: 8.0             # APO 의 1.0 을 batch 8 -> 64 로 보정

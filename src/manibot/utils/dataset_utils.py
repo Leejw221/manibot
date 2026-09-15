@@ -185,10 +185,20 @@ def create_dataloader(dataset, cfg: DictConfig, is_training=True):
         lab = np.load(ft.labels)
         sign, _ = preference(lab["S"])
         allowed = list(sampler) if sampler is not None else None   # drop_n_last_frames 존중
-        pools = split_pools(sign, lab["has_intv"], allowed)
+        # n_demo_episodes 를 주면 correct 를 (시연, 정책 롤아웃) 으로 쪼갠다 — 풀이 넷이 되고
+        # balanced 도 길이 4 여야 한다.  라운드가 쌓여도 시연 노출을 고정하기 위한 것이다.
+        n_demo = ft.get("n_demo_episodes", None)
+        is_demo = None
+        if n_demo:
+            import zarr
+            ep = np.asarray(zarr.open(str(cfg.task.dataset_root), "r")["data"]["episode_index"]).ravel()
+            is_demo = ep[:len(sign)] < int(n_demo)
+        pools = split_pools(sign, lab["has_intv"], allowed, is_demo)
+        names = ("시연", "롤아웃", "개입", "개입직전") if is_demo is not None else ("correct", "개입", "개입직전")
         bs = BalancedBatchSampler(pools, batch_size, tuple(ft.balanced))
-        logger.info(f"APO balanced sampler: 풀 {[len(p) for p in pools]} · "
-                    f"배치당 {bs.per} · 1 에폭 {len(bs)} 배치")
+        logger.info("APO balanced sampler: "
+                    + " · ".join(f"{n} {len(p)}->{q}" for n, p, q in zip(names, pools, bs.per))
+                    + f" · 1 에폭 {len(bs)} 배치")
         return torch.utils.data.DataLoader(
             dataset, num_workers=cfg.train.num_workers, batch_sampler=bs,
             pin_memory=True, persistent_workers=cfg.train.num_workers > 0)
