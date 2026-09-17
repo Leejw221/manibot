@@ -42,9 +42,11 @@ def merge(srcs, out):
 
     for f in fields:
         ref = next((r["data"][f] for r in roots if f in r["data"]), None)
-        shape = (total,) + tuple(ref.shape[1:])
-        chunks = (CHUNK,) + tuple(ref.shape[1:])
-        arr = d.zeros(f, shape=shape, chunks=chunks, dtype=ref.dtype, overwrite=True)
+        # 시연끼리만 합치면 action_mode 가 어디에도 없다 — 배포 데이터와 같은 1차원 int64 로 만든다.
+        tail, dtype = (tuple(ref.shape[1:]), ref.dtype) if ref is not None else ((), np.int64)
+        shape = (total,) + tail
+        chunks = (CHUNK,) + tail
+        arr = d.zeros(f, shape=shape, chunks=chunks, dtype=dtype, overwrite=True)
         off = 0
         for r, n in zip(roots, lens):
             n = int(n)

@@ -7,6 +7,7 @@ training come from the same code.
 """
 
 import json
+import math
 import re
 import logging
 import random
@@ -260,8 +261,27 @@ def _log_eval_to_wandb(cfg, checkpoint, sampler, info, eval_dir):
     run.summary[f"{tag}/pc_success"] = info["aggregated"]["pc_success"]
     run.summary[f"{tag}/n_episodes"] = cfg.val.eval_n_episodes
     run.summary[f"{tag}/success_episodes"] = sum(1 for e in info["per_episode"] if e["success"])
+    # 성공률만으로는 "고친 것"과 "깨뜨린 것"이 상쇄돼 안 보인다 — 같은 초기상태의 기준 정책과 짝지어 남긴다.
+    if cfg.get("compare_to"):
+        cmp = _paired_vs(info, cfg.compare_to)
+        run.log({"eval/ckpt_step": step, **{f"eval/K{K}/vs_ref/{k}": v for k, v in cmp.items()}})
+        for k, v in cmp.items():
+            run.summary[f"{tag}/vs_ref/{k}"] = v
+        logger.info(f"vs {cfg.compare_to}: {cmp}")
     run.finish()
     logger.info(f"wandb: {base} <- {tag}")
+
+
+def _paired_vs(info, ref_path):
+    """기준 eval_result.json 과 에피소드 번호로 짝지은 전환표 + 양측 정확 McNemar."""
+    ref = {e["episode"]: bool(e["success"]) for e in json.load(open(ref_path))["per_episode"]}
+    cur = {e["episode"]: bool(e["success"]) for e in info["per_episode"]}
+    keys = sorted(set(ref) & set(cur))
+    fs = sum(1 for k in keys if cur[k] and not ref[k])
+    sf = sum(1 for k in keys if ref[k] and not cur[k])
+    n = fs + sf
+    p = min(1.0, 2 * sum(math.comb(n, i) for i in range(min(fs, sf) + 1)) / 2 ** n) if n else 1.0
+    return {"fs": fs, "sf": sf, "net": fs - sf, "mcnemar_p": p, "n_paired": len(keys)}
 
 
 def main():

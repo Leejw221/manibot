@@ -37,7 +37,7 @@ class APOLoss:
                  beta_u=8.0, z0_clamp=(-5.0, 5.0), bc_weight=0.0, ref_mode="live",
                  expert_mag=1.0, z0_mode="batch_mean", n_t=8, use_mag=True,
                  mask_gripper_u=True, gripper_dim=-1, undesirable_weight=1.0,
-                 z0_min=None):
+                 z0_min=None, t_mode="uniform"):
         self.ref = ref
         self.m_t = m_t
         # 샘플러가 푸는 것과 **같은 배열**. 기준이 둘이면 배치 구성이 손실에서 재현되지 않는다.
@@ -48,6 +48,9 @@ class APOLoss:
         # mag = |S| 는 APO 원문에 없는 우리 추가물이다. false 면 1 로 두고 부호만 쓴다
         # — kappa 측정에서 초기 업데이트의 48.8% 를 개입직전에 몰아주고 있었다 [2026-09-13].
         self.use_mag = use_mag
+        # t_mode: "uniform"(기존) | "lam_is"(reward 를 lambda(t) 가중으로 바꾸고 t 를 lambda 비례 추출)
+        self.t_mode = t_mode
+        self._is = None
         # U 의 reward 에서 뺄 행동 차원(기본 = 마지막 = gripper). 근거는 __call__ ③ 주석.
         self.mask_gripper_u = mask_gripper_u
         self.gripper_dim = gripper_dim
@@ -137,18 +140,38 @@ class APOLoss:
 
         # ④ 같은 t·eps 를 공유한다 (antithetic sampling — VRPO 의 "free lunch").
         #    n_t 번 뽑아 평균내면 ELBO 추정 분산이 1/n_t 로 준다.
+        if self.t_mode == "lam_is" and self._is is None:
+            self._is = _lam_is_tables(m.noise_scheduler, x0.device)
+
         se_diff, l1_acc = 0.0, 0.0
+        probe_k = []  # 진단용: k 번째 추첨의 (t, eps, 청크별 ref 오차). 학습 경로에는 안 쓰인다
         for _ in range(self.n_t):
-            t = torch.randint(0, T, (B,), device=x0.device, dtype=torch.long)
+            if self.t_mode == "lam_is":
+                lo, p_t, isw = self._is
+                t = torch.multinomial(p_t.expand(B, -1), 1).squeeze(1) + lo
+            else:
+                t = torch.randint(0, T, (B,), device=x0.device, dtype=torch.long)
             eps = torch.randn_like(x0)
             e_the, _, _ = unet_out(m, cond_t, x0, t, eps)
             with torch.no_grad():
                 e_ref, _, _ = unet_out(self.ref.diffusion, cond_r, x0, t, eps)
             sq = lambda e: (((eps - e) ** 2) * dmask).sum(dim=(1, 2)) / n_eff
-            se_diff = se_diff + (sq(e_ref) - sq(e_the))
+            s_ref = sq(e_ref)
+            d_sq = s_ref - sq(e_the)
+            probe_k.append((t, eps, s_ref))
+            se_diff = se_diff + (self._is[2][t] * d_sq if self.t_mode == "lam_is" else d_sq)
             # 가중치용 오차에는 마스크를 안 건다 — APO 의 adaptive weight 는 7차원 전부의 L1 이다
             # (ddp_robotic_trainer.py L294, action_space=7) [코드 원문 직접 2026-09-14].
-            l1_acc = l1_acc + (eps - e_the).abs().mean(dim=(1, 2)).detach() / self.m_t.to(x0.device)[t]
+            # adaptive weight 는 **기존 균등 추출 경로를 유지**한다 — t 를 공유하면 reward 뿐 아니라
+            # w_i·lambda_{D/U} 까지 같이 바뀌어 "reward 만의 효과" 비교가 성립하지 않는다.
+            if self.t_mode == "lam_is":
+                with torch.no_grad():
+                    tw = torch.randint(0, T, (B,), device=x0.device, dtype=torch.long)
+                    ew = torch.randn_like(x0)
+                    e_w, _, _ = unet_out(m, cond_t, x0, tw, ew)
+                    l1_acc = l1_acc + (ew - e_w).abs().mean(dim=(1, 2)) / self.m_t.to(x0.device)[tw]
+            else:
+                l1_acc = l1_acc + (eps - e_the).abs().mean(dim=(1, 2)).detach() / self.m_t.to(x0.device)[t]
 
         # ③ beta 는 sigma **밖에** 둔다. r 안에 넣으면 z0 클램프·grad_clip 같은 상수가
         #    조용히 beta 에 딸려 움직인다 (실제로 beta 1->10 에서 클램프가 10배 조여졌다).
@@ -188,6 +211,10 @@ class APOLoss:
             lam = torch.where(sign < 0, lam * self.undesirable_weight, lam)
         u = torch.sigmoid(self.beta * sign.to(r.dtype) * (r - z0))
         loss = -(lam * u).mean()
+        # 진단용 샘플별 값 — 배치 평균 로그만으로는 그룹별 포화 방향을 못 가른다 (2026-09-17)
+        self.last = {"r": r.detach(), "z0": z0.detach(), "z0_raw": z0_raw.detach(), "lam": lam.detach(),
+                     "u": u.detach(), "sign": sign, "cond_t": cond_t.detach(), "cond_r": cond_r,
+                     "x0": x0, "dmask": dmask, "n_eff": n_eff, "k": probe_k}
 
         keep = sign != 0
         n_keep = keep.sum().clamp_min(1)
@@ -205,3 +232,29 @@ class APOLoss:
         out["apo_frac"] = 1.0 if not self.bc_weight else abs(
             (-(lam * u).mean()).item()) / (abs(loss.item()) + 1e-12)
         return loss, out
+
+
+def _lam_is_tables(sched, device):
+    """lambda(t) 비례 추출용 (lo, p_t, isw) 를 만든다.
+
+    lambda(t) = beta_t^2 / (2 * beta~_t * alpha_t * (1-abar_t))  — 고정분산·eps 파라미터화에서
+    lambda(t)*[||eps-eps_ref||^2 - ||eps-eps_theta||^2] 가 **reverse-KL 항의 차**와 같다 [검산 2026-09-15].
+    ⚠ 이건 로그확률비가 아니다 (log p = ELBO + G, gap 차의 부호 미정).
+    ⚠ S = 코드 1..98 (논문 t=2..99).  제외: L_0(decoder) · L_{T-1}(alpha_T 퇴화) · L_T(prior, 차에서 상쇄).
+      끝점 제외는 **우리 판단**이다.
+    """
+    ac = sched.alphas_cumprod.to(device).double()
+    ac_prev = torch.cat([torch.ones(1, device=device, dtype=ac.dtype), ac[:-1]])
+    beta = (1 - ac / ac_prev).clamp(max=0.999)
+    alpha = 1 - beta
+    bt = (1 - ac_prev) / (1 - ac) * beta
+    lam = beta ** 2 / (2 * bt * alpha * (1 - ac))
+    lo, hi = 1, len(ac) - 1                       # 코드 1..98
+    ls = lam[lo:hi]
+    lam_n = ls / ls.mean()                        # lambda~,  평균 1
+    p = ls / ls.sum()                             # p_t
+    P = hi - lo
+    isw_s = lam_n / (P * p)                       # == 1 (수치로 확인)
+    isw = torch.ones_like(lam)
+    isw[lo:hi] = isw_s
+    return lo, p.float(), isw.float()

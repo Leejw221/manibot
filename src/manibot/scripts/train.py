@@ -107,7 +107,8 @@ def _build_finetune_loss(cfg, network):
         mask_gripper_u=a.get("mask_gripper_u", True),
         gripper_dim=a.get("gripper_dim", -1),
         undesirable_weight=a.get("undesirable_weight", 1.0),
-        z0_min=a.get("z0_min", None))
+        z0_min=a.get("z0_min", None),
+        t_mode=a.get("t_mode", "uniform"))
 
 
 def _build_ema(policy, cfg):
@@ -164,6 +165,13 @@ class PolicyTrainer:
         # network 는 끝까지 평범한 정책이라 체크포인트·EMA·eval 경로가 안 바뀐다.
         self.loss_fn = _build_finetune_loss(config, network)
 
+        # 고정 probe — 새 데이터를 배우는 동안 기존 적합을 얼마나 잃는지 곡선으로 본다 (freq 0 이면 끔).
+        self.probe = None
+        if config.get("probe", {}).get("freq", 0) > 0:
+            from manibot.utils.probe import FitProbe
+            self.probe = FitProbe(config, train_dataloader.dataset, network, self.preprocessor,
+                                  device, self.amp_dtype, self.use_amp)
+
         self.train_logger = TrainLogger(config)
 
         self.train_metrics = {
@@ -215,11 +223,15 @@ class PolicyTrainer:
         # Backward pass
         self.grad_scaler.scale(loss).backward()
         self.grad_scaler.unscale_(self.optimizer)
-        grad_norm = torch.nn.utils.clip_grad_norm_(
-            self.network.parameters(),
-            self.config.train.grad_clip_norm,
-            error_if_nonfinite=False,
-        )
+        # grad_clip_norm <= 0 이면 자르지 않는다 (LeRobot 관례). Diffusion Policy 원문 구현에는
+        # clip 이 없다 — 원문에서 벗어나려면 "무엇을 관측해서 넣는지" 가 있어야 하므로 끌 수 있어야 한다.
+        # 자르지 않아도 norm 은 그대로 기록한다.
+        clip = self.config.train.grad_clip_norm
+        grad_norm = (torch.nn.utils.clip_grad_norm_(
+            self.network.parameters(), clip, error_if_nonfinite=False)
+            if clip and clip > 0 else
+            torch.nn.utils.get_total_norm(
+                [p.grad for p in self.network.parameters() if p.grad is not None]))
 
         # Optimizer step
         self.grad_scaler.step(self.optimizer)
@@ -324,6 +336,11 @@ class PolicyTrainer:
             video_key=image_keys[0] if image_keys else None,
         )
 
+    def _log_probe(self):
+        metrics = self.probe.measure(self.network, self.ema)
+        logger.info("  probe  " + "  ".join(f"{k}={v:.4g}" for k, v in metrics.items()))
+        self.train_logger.log_metrics(metrics, prefix="probe", step=self.step_counter)
+
     def train(self, num_steps=None, start_step=0):
         import time
 
@@ -334,6 +351,8 @@ class PolicyTrainer:
         dl_iter = cycle(self.train_dataloader)
 
         logger.info(f"Starting training from step {start_step} to {num_steps}")
+        if self.probe is not None:
+            self._log_probe()
 
         for step in range(start_step, num_steps):
             # Load data
@@ -381,6 +400,9 @@ class PolicyTrainer:
                     wandb_log_dict.update(output_dict)
                 self.train_logger.log_metrics(wandb_log_dict, prefix='train', step=self.step_counter)
                 self.train_tracker.reset_averages()
+
+            if self.probe is not None and self.step_counter % self.config.probe.freq == 0:
+                self._log_probe()
 
             if is_val_offline_step:
                 logger.info(f"Offline validation at step {self.step_counter}")
@@ -575,6 +597,16 @@ def train(cfg: DictConfig):
         preprocessor=preprocessor,
         postprocessor=postprocessor,
     )
+
+    # optimizer 의 m·v 만 이어받는다 — 스케줄러·step 은 새로 시작한다(resume 이 아니다).
+    # 저장된 param_groups 의 lr 은 cosine 끝값(0)이라 이번 학습의 lr 로 되돌린다.
+    if _ft is not None and _ft.get("enabled", False) and _ft.get("load_optimizer", None):
+        st = torch.load(Path(_ft.load_optimizer) / "training_state.pt",
+                        map_location=cfg.device, weights_only=False)
+        runner.optimizer.load_state_dict(st["optimizer"])
+        for g in runner.optimizer.param_groups:
+            g["lr"] = cfg.optimizer_lr
+        logger.info(f"optimizer 상태 <- {_ft.load_optimizer} (스케줄러·step 은 새로 시작)")
 
     # Resume from checkpoint if specified
     start_step = 0

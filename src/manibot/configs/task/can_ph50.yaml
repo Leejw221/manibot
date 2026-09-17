@@ -1,0 +1,14 @@
+# @package _global_
+
+# robomimic_can 과 환경·규약이 같고 **데이터만 다르다** — 공개 can-ph 200개에서 무작위 50개.
+# square_ph50 과 같은 역할(성장 실험의 base). square 는 추출 인덱스가 안 남아 이번엔 남긴다:
+#   np.random.default_rng(0).choice(200, 50, replace=False) 를 정렬 -> hdf5 mask "ph50_seed0"
+#   나머지 150개는 mask "ph150_rest_seed0" (추가 시연용)
+# 만든 법: python -m manibot.scripts.convert_hdf5_to_zarr task=can_ph50 filter_key=ph50_seed0
+defaults:
+  - robomimic_can
+  - _self_
+
+task:
+  name: can_ph50
+  dataset_root: ${oc.env:MANIBOT_DATASETS_DIR,data}/can_ph50_zarr

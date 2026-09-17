@@ -49,6 +49,15 @@ train:
   save_best: true
   use_amp: true
 
+# 고정 probe (utils/probe.py) — freq 0 이면 끈다.
+# n_old_episodes 를 주면 앞쪽 에피소드를 old, 나머지를 new 로 갈라 따로 잰다.
+probe:
+  freq: 0
+  n_old_episodes: null
+  n_batches: 4
+  batch_size: 64
+  seed: 7
+
 # Validation settings
 # 데모 데이터는 전량 학습에 쓴다 — held-out 으로 빼두지 않는다. 성능 판단은 환경
 # rollout 성공률로 한다(val_online_freq). num_episodes>0 으로 두면 그만큼 학습에서
@@ -118,6 +127,10 @@ finetune:
                                 #   시연 / 정책 롤아웃 / 개입 / 개입직전
   n_demo_episodes: null         # 앞 N 개 에피소드를 '시연' 으로 따로 뗀다(ph50 이면 50).
                                 # null 이면 지금까지의 3풀 동작 그대로.
+  load_optimizer: null          # 체크포인트 경로를 주면 **optimizer 상태(m·v)만** 이어받는다.
+                                # 스케줄러·step 은 새로 시작하므로 resume 과 다르다.
+                                # 공개 코드는 fine-tuning 때 전부 새로 만들지만 이유가 적혀 있지 않고,
+                                # 우리는 같은 과제·같은 손실이라 resume 에 가깝다 — 그래서 재본다.
   apo:
     beta: 30.0              # 측정 기반 (초기 포화율 <20%)
     beta_d: 8.0             # APO 의 1.0 을 batch 8 -> 64 로 보정
@@ -131,6 +144,9 @@ finetune:
                             # (APO 공개 코드엔 없다 — rejected 의 [:, :-1] 은 stop 토큰)
     gripper_dim: -1         # 행동 벡터에서 gripper 위치
     z0_min: null            # z0 하한. null 이면 제한 없음(지금까지의 동작).
+    t_mode: uniform         # uniform(기존) | lam_is — reward 를 lambda(t) 가중으로 바꾸고
+                            #   t 를 lambda 비례 추출.  adaptive weight 는 균등 경로 유지.
+                            #   "일부 reverse KL 항의 가중 차이" 이지 로그확률비 복원이 아니다
                             # 0 이면 '기준점이 ref 대비 개선량 0 아래로 안 내려간다'
                             # ⚠ KL 복원이 아니라 설계 선택 — 근거는 apo_loss 주석
     undesirable_weight: 1.0 # 0 이면 U 가 손실에 기여 안 함 — 밀어내기를 끄는 진단용
