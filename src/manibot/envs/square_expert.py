@@ -69,6 +69,12 @@ T_PEG = 28          # 봉 위로 이송
 T_INS = 25          # 삽입 하강 (물리면 조기 종료)
 T_OUT = 14          # 물러나기
 GRIP_BUDGET, GRIP_MIN, GRIP_EPS = 60, 15, 2e-4   # 파지 대기도 줄인다 (원래 25 는 여유가 컸다)
+# 폐루프 보정(_servo_until)의 속도 상한 — 남은 오차를 한 번에 명령하면 kp 비례라 오차 8 mm ·
+# 회전 14° 만 넘어도 행동이 ±1 에 붙어 정렬이 튄다 [사용자 관찰 2026-09-17]
+# ⚠ 구간 경계의 급변(직전 궤적 끝에서 팔이 뒤처진 만큼 명령점이 되돌아감)은 남아 있다.
+#   새 구간을 직전 명령점에서 이어가게 해봤으나 추종 지연이 누적돼 포화가 늘었고(정렬 27%),
+#   정지·파지까지 이으면 파지가 깨졌다(성공 30 -> 6) [측정 2026-09-17]. 그래서 되돌렸다.
+V_POS, V_ROT, SERVO_MIN = 0.002, np.radians(2.0), 4
 
 
 def _slerp(R0, R1, a):
@@ -292,6 +298,28 @@ class SquareExpert:
                 return
             yield self._action(np.asarray(_val(pos), float), _val(R), grip)
 
+    def _servo_until(self, pos, R, grip, name, done_fn, budget=60):
+        """_push_until 과 같은 폐루프지만 남은 오차를 **이징 궤적으로 나눠** 따라간다.
+
+        구간마다 목표를 다시 재고(너트 실제 위치 보정은 그대로), 오차 크기로 스텝 수를 정해
+        V_POS·V_ROT 을 넘지 않게 한다. 조건이 서면 구간 중간이라도 끊는다.
+        """
+        self.stage = name
+        used = 0
+        while used < budget:
+            if done_fn():
+                return
+            p0, R0 = self._eef()
+            tgt, Rt = np.asarray(_val(pos), float), _val(R)
+            n = int(np.ceil(max(np.linalg.norm(tgt - p0) / V_POS, _rot_dist(Rt, R0) / V_ROT)))
+            n = min(max(n, SERVO_MIN), budget - used)
+            for i in range(1, n + 1):
+                if done_fn():
+                    return
+                a = _ease(i / n)
+                yield self._action(p0 + (tgt - p0) * a, _slerp(R0, Rt, a), grip)
+                used += 1
+
     def _grip(self, pos, R, grip, name, budget=GRIP_BUDGET):
         """손가락이 멈출 때까지 기다린다 — 고정 스텝으로 기다리면 덜 물린 채 끌게 된다."""
         self.stage = name
@@ -375,8 +403,8 @@ class SquareExpert:
         lift_steps = max(self._T(T_LIFT), int(np.degrees(abs(d)) / 6))
         yield from self._goto([p[0], p[1], z_eef], R_hold, 1, "lift_align", lift_steps)
         # 진짜로 떴는지 확인하고 안 떴으면 더 올린다 — 여기서 못 뜨면 이송 중 봉에 걸린다
-        yield from self._push_until([p[0], p[1], z_eef], R_hold, 1, "lift_align",
-                                    lambda: self._nut()[0][2] > top + self.clear * 0.8, budget=60)
+        yield from self._servo_until([p[0], p[1], z_eef], R_hold, 1, "lift_align",
+                                     lambda: self._nut()[0][2] > top + self.clear * 0.8, budget=60)
 
         # ⑤ 봉 위로
         peg = self._peg()
@@ -412,7 +440,7 @@ class SquareExpert:
             # 남은 각오차만큼 손목을 되돌린다 — 명령을 쌓지 않고 **지금 너트 각**을 보고 낸다
             return rot_z(-_yaw_err()) @ self._eef()[1]
 
-        yield from self._push_until(_align_tgt, _align_R, 1, "align_peg", _aligned, budget=90)
+        yield from self._servo_until(_align_tgt, _align_R, 1, "align_peg", _aligned, budget=90)
         # 관문을 지난 자세를 그대로 굳혀 내려간다 — 접촉 중에 손목을 더 돌리면 걸린다
         _, R_ins = self._eef()
 

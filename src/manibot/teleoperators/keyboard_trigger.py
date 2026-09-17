@@ -9,6 +9,7 @@
 
 키 (LeRobot 규약 + i):
     i          개입 on/off 토글          ← 우리 추가.  TeleopEvents.IS_INTERVENTION
+    h          반환 후보 시점 표시        ← 우리 추가.  제어권은 안 바꾸고 step 만 기록한다
     → 또는 n   에피소드 조기 종료          exit_early
     ← 또는 r   다시 찍기                  rerecord_episode
     s          저장                      save   (lerobot/rollout/configs.py 의 save_key 기본값)
@@ -25,7 +26,7 @@ from lerobot.utils.keyboard_input import apply_recording_control, create_key_lis
 
 logger = logging.getLogger(__name__)
 
-HELP = "i=개입 토글 · →/n=다음 · ←/r=다시 · s=저장 · ESC/q=중단"
+HELP = "i=개입 토글 · h=반환 후보 표시 · →/n=다음 · ←/r=다시 · s=저장 · ESC/q=중단"
 
 
 class KeyboardTrigger:
@@ -44,6 +45,9 @@ class KeyboardTrigger:
             "save": False,
             TeleopEvents.IS_INTERVENTION.value: False,
         }
+        # 반환 후보 표시 — 개입 중 "정책에 돌려줘 볼 만하다" 고 본 시점. 실제로 돌려주지는 않고
+        # 수집기가 step 을 기록해 나중에 그 상태에서 정책을 돌려본다 [사용자 결정 2026-09-17]
+        self._marks = 0
         self._listener = create_key_listener(self._on_key, controls_help=HELP)
         if self._listener is None:
             logger.warning("키보드 입력을 못 잡는다 — 개입 없이 정책만 돌게 된다. %s", HELP)
@@ -53,6 +57,10 @@ class KeyboardTrigger:
         key = name.lower()
         if key == "i":
             self.toggle()
+        elif key == "h":
+            self._marks += 1
+            if self.verbose:
+                print("h: 반환 후보 표시")
         elif key in ("right", "n"):
             apply_recording_control("right", self.events)
         elif key in ("left", "r"):
@@ -86,12 +94,18 @@ class KeyboardTrigger:
         if self.verbose:
             print(f"i: 개입 {'시작' if v else '해제'}")
 
+    def pop_marks(self):
+        """지난 호출 이후 눌린 h 횟수 (0 이상)."""
+        n, self._marks = self._marks, 0
+        return n
+
     def reset_episode(self):
         """에피소드 경계에서 부른다. `stop_recording` 은 남긴다 — 전체 중단이라서."""
         self.events["exit_early"] = False
         self.events["rerecord_episode"] = False
         self.events["save"] = False
         self.events[TeleopEvents.IS_INTERVENTION.value] = False
+        self._marks = 0
 
     def stop(self):
         if self._listener is not None:

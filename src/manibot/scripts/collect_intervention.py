@@ -155,6 +155,10 @@ def collect(cfg: DictConfig):
     kept0 = len(ep_success)
     # 이어받기 — 기존 sim_states 를 읽어 길이를 맞춘다(없으면 None 으로 채운다).
     ep_init_states, ep_intv_states, ep_intv_steps = _read_states(ds.root, kept0)
+    # 프레임별 sim 상태 · 제어 주체(expert 단계) · 반환 후보 step — 수집한 **그 상황**을 정확히
+    # 복원해 다시 돌려보기 위한 것이다. init·intv 두 시점만으로는 U 구간 시작을 못 되살렸다
+    # (기록된 행동 재생은 개입 시점에서 0.017~0.16 어긋났다) [2026-09-17]
+    frame_store = _read_frames(ds.root)
     round_frames = int(getattr(ds, "num_frames", 0) or 0)     # 이어받은 분량부터 센다
     intv_frames = 0
     logger.info(f"저장: {ds.root} (repo_id={cfg.repo_id})\n키: {HELP}")
@@ -182,6 +186,10 @@ def collect(cfg: DictConfig):
             # D 를 똑같이 덮으려면 그래야 한다.
             obs = env.reset_to({"states": _init_states[(kept0 + kept) % len(_init_states)]})
         trig.reset_episode()
+        # 에피소드마다 sampling seed 를 준다 — 평가 하네스(에피소드별 seed)와 같은 규약.
+        # 비동기 추론이라 타이밍이 끼어 완전 재현은 안 되지만, 앞 에피소드 길이가 뒤 noise 를
+        # 바꾸는 것은 막는다
+        torch.manual_seed(int(cfg.seed) * 1000 + kept0 + kept)
         # **초기 시뮬 상태**를 남긴다. 라운드 1 에는 이게 없어서 "수집했던 그 상황"에서
         # 다시 평가할 수가 없었고, 개입을 못 배운 것인지 그 상태에 도달을 못 한 것인지
         # 갈라내지 못했다 [2026-09-14]. 실패해도 수집은 계속한다.
@@ -196,7 +204,8 @@ def collect(cfg: DictConfig):
             viewer.reset_clock()
         expert, pending, last_action, step = None, None, None, 0
         merger.clear()
-        frames = []
+        frames, f_states, f_ctrl, marks = [], [], [], []
+        trig.pop_marks()
         success = False
 
         # 실물(`manipulation_pipeline`)의 배포 루프와 같은 구조다.
@@ -255,6 +264,10 @@ def collect(cfg: DictConfig):
                     raw, f"ep{kept0+kept} step{step}  "
                          f"{'INTERVENING (i=off)' if on else 'policy (i=on)'}  "
                          f"[{expert.stage if expert else '-'}]", highlight=on))
+            if trig.pop_marks() and mode == LABEL_INTV:
+                marks.append(step)                 # 이 프레임의 상태에서 정책에 돌려줘 볼 만하다
+            f_states.append(np.asarray(raw.sim.get_state().flatten(), dtype=np.float64))
+            f_ctrl.append(expert.stage if mode == LABEL_INTV else "policy")
             frames.append(dd.make_frame(raw._get_observations(), cams, low_dim,
                                         action, mode, cfg.single_task))
             obs, _, _, _ = env.step(np.asarray(action))
@@ -281,25 +294,31 @@ def collect(cfg: DictConfig):
         ep_init_states.append(init_state)
         ep_intv_states.append(intv_state)
         ep_intv_steps.append(intv_step)
+        k = f"ep{kept0 + kept:04d}"
+        frame_store[f"{k}_state"] = np.stack(f_states)
+        frame_store[f"{k}_ctrl"] = np.asarray(f_ctrl)
+        frame_store[f"{k}_marks"] = np.asarray(marks, dtype=np.int64)
         kept += 1
         round_frames += len(frames)
         intv_frames += n_i
         prog = (f"{round_frames:,}/{round_threshold:,} 프레임"
                 if round_threshold else f"{kept0+kept}/{cfg.n_episodes} 에피소드")
         logger.info(f"  ep{kept0+kept-1}: {len(frames):4d} 프레임 · 개입 {n_i} · "
-                    f"{'성공' if success else '실패'} · 누적 {prog} "
+                    f"{'성공' if success else '실패'} · 반환후보 {len(marks)} · 누적 {prog} "
                     f"(개입 {intv_frames/max(round_frames,1):.0%})")
         if cfg.save_every > 0 and kept % cfg.save_every == 0:
             ds.finalize()                  # 여기까지는 죽어도 남는다
             # 성공 목록도 여기서만 쓴다 — 매번 쓰면 못 읽는 에피소드까지 세어 어긋난다
             dd.write_success(ds.root, ep_success)
             _write_states(ds.root, ep_init_states, ep_intv_states, ep_intv_steps)
+            _write_frames(ds.root, frame_store)
             ds = _open()
 
     # finalize() 를 빠뜨리면 잘린 parquet 이 남는다 — save_episode 가 백그라운드로 쓴다.
     ds.finalize()
     dd.write_success(ds.root, ep_success)
     _write_states(ds.root, ep_init_states, ep_intv_states, ep_intv_steps)
+    _write_frames(ds.root, frame_store)
     if pool is not None:
         pool.shutdown(wait=False, cancel_futures=True)
     trig.stop()
@@ -344,6 +363,22 @@ def _read_states(root, n):
     stp = list(d["intv_step"])
     pad = n - len(ini)
     return (ini + [None] * pad)[:n], (itv + [None] * pad)[:n], (stp + [-1] * pad)[:n]
+
+
+# `sim_frames.npz` = 에피소드 i 마다 epXXXX_state (T, D) · epXXXX_ctrl (T,) "policy" 또는 expert
+# 단계 이름 · epXXXX_marks (반환 후보 step).  state[t] 는 frame t 를 기록한 **그 순간**(행동 전)
+# 의 상태라 LeRobot frame t 의 관측과 짝이 맞는다.
+
+def _write_frames(root, store):
+    np.savez(Path(root) / "sim_frames.npz", **store)
+
+
+def _read_frames(root):
+    f = Path(root) / "sim_frames.npz"
+    if not f.exists():
+        return {}
+    d = np.load(f)
+    return {k: d[k] for k in d.files}
 
 
 def main():
