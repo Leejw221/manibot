@@ -1,0 +1,16 @@
+# @package _global_
+# APO 라운드 2(R2', 2026-09-18) — 시연(square_ph50 50ep) + R1' 배포(square_deploy_r1b 64ep)
+# + R2 배포(square_deploy_r2b 62ep).  **데이터는 누적**하고 pi_ref 는 직전 라운드 정책으로
+# 옮긴다 [APO Algorithm 1].  R2 는 R1'APO(8K, EMA)로 수집했고 초기상태는 R1' 과 동일하다.
+# 만든 법: python -m manibot.scripts.merge_zarr --out data/square_apo_r2b_zarr \
+#            data/square_ph50_zarr data/square_deploy_r1b_zarr data/square_deploy_r2b_zarr
+defaults:
+  - robomimic_square
+  - _self_
+
+task:
+  name: square_apo_r2b
+  hdf5_path: ${oc.env:MANIBOT_DATASETS_DIR,data}/square_ph50/demos.hdf5
+  dataset_root: ${oc.env:MANIBOT_DATASETS_DIR,data}/square_apo_r2b_zarr
+  sim:
+    max_steps: 500
