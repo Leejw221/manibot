@@ -37,7 +37,7 @@ class APOLoss:
                  beta_u=8.0, z0_clamp=(-5.0, 5.0), bc_weight=0.0, ref_mode="live",
                  expert_mag=1.0, z0_mode="batch_mean", n_t=8, use_mag=True,
                  mask_gripper_u=True, gripper_dim=-1, undesirable_weight=1.0,
-                 z0_min=None, t_mode="uniform"):
+                 z0_min=None, t_mode="uniform", balance_ratio=None):
         self.ref = ref
         self.m_t = m_t
         # 샘플러가 푸는 것과 **같은 배열**. 기준이 둘이면 배치 구성이 손실에서 재현되지 않는다.
@@ -64,6 +64,11 @@ class APOLoss:
         #   clamp(-5,5) 도 음수를 막지 않는다 [원문 코드 직접 2026-09-15].
         #   **설계 선택**이다: 기준점이 "ref 대비 개선량 0" 아래로 안 내려가게 한다.
         self.z0_min = z0_min
+        # KTO 식 (9): (lam_D * n_D) / (lam_U * n_U) 를 [1, 1.5] 에 두라 — 원문은 이 자리에서
+        # desirable/undesirable 균형을 맞춘다 (beta 가 아니라) [원문 직접 2026-09-18].
+        # APO 의 적응 가중치는 학습 중 값이 변해 이 비율이 흘러간다 — 실측 3.4 -> 14.4 (8K).
+        # 그래서 고정 계수가 아니라 **배치마다** U 쪽 lam 을 재조정해 목표 비율을 유지한다.
+        self.balance_ratio = balance_ratio
         # z0_mode: batch_mean = ELBO-KTO 의 Zero Compute Baseline (b0 = 배치 안 r̂ 의 평균).
         #   상수 baseline 중 분산 최적임이 증명돼 있다 [ELBO-KTO Lemma 1, 원문 직접 2026-09-12].
         #   mismatch = KTO 원래의 엇갈린 짝 추정. 우리 실측에서 r 과 척도가 달라 26->462 로
@@ -209,6 +214,11 @@ class APOLoss:
         lam, wdiag = apo_weights(l_tilde, None, self.m_t, sign, mag, self.beta_d, self.beta_u)
         if self.undesirable_weight != 1.0:
             lam = torch.where(sign < 0, lam * self.undesirable_weight, lam)
+        if self.balance_ratio:
+            d, u = sign > 0, sign < 0
+            s_d, s_u = lam[d].sum().detach(), lam[u].sum().detach()
+            if s_d > 0 and s_u > 0:
+                lam = torch.where(u, lam * (s_d / (s_u * self.balance_ratio)), lam)
         u = torch.sigmoid(self.beta * sign.to(r.dtype) * (r - z0))
         loss = -(lam * u).mean()
         # 진단용 샘플별 값 — 배치 평균 로그만으로는 그룹별 포화 방향을 못 가른다 (2026-09-17)
@@ -216,12 +226,15 @@ class APOLoss:
                      "u": u.detach(), "sign": sign, "cond_t": cond_t.detach(), "cond_r": cond_r,
                      "x0": x0, "dmask": dmask, "n_eff": n_eff, "k": probe_k}
 
+        with torch.no_grad():                     # 실효 비율 — 목표대로 유지되는지 로그로 본다
+            _d, _u = lam[sign > 0].sum(), lam[sign < 0].sum()
+            bal = float(_d / _u) if _u > 0 else float("nan")
         keep = sign != 0
         n_keep = keep.sum().clamp_min(1)
         sat = (((u < 0.05) | (u > 0.95)) & keep).sum() / n_keep
         out = {"r_mean": r.mean().item(), "r_std": r.std().item(), "z0": z0.item(),
                "z0_raw": z0_raw.item(), "u_mean": u.mean().item(), "sat_rate": sat.item(),
-               "label_frac": keep.float().mean().item(), **wdiag}
+               "label_frac": keep.float().mean().item(), "bal": bal, **wdiag}
         for nm, sel in (("r_d", sign > 0), ("r_u", sign < 0)):
             out[nm] = r[sel].mean().item() if sel.any() else float("nan")
 
