@@ -37,7 +37,7 @@ class APOLoss:
                  beta_u=8.0, z0_clamp=(-5.0, 5.0), bc_weight=0.0, ref_mode="live",
                  expert_mag=1.0, z0_mode="batch_mean", n_t=8, use_mag=True,
                  mask_gripper_u=True, gripper_dim=-1, undesirable_weight=1.0,
-                 z0_min=None, t_mode="uniform", balance_ratio=None):
+                 z0_min=None, t_mode="uniform", beta_u_sigmoid=None):
         self.ref = ref
         self.m_t = m_t
         # 샘플러가 푸는 것과 **같은 배열**. 기준이 둘이면 배치 구성이 손실에서 재현되지 않는다.
@@ -64,11 +64,6 @@ class APOLoss:
         #   clamp(-5,5) 도 음수를 막지 않는다 [원문 코드 직접 2026-09-15].
         #   **설계 선택**이다: 기준점이 "ref 대비 개선량 0" 아래로 안 내려가게 한다.
         self.z0_min = z0_min
-        # KTO 식 (9): (lam_D * n_D) / (lam_U * n_U) 를 [1, 1.5] 에 두라 — 원문은 이 자리에서
-        # desirable/undesirable 균형을 맞춘다 (beta 가 아니라) [원문 직접 2026-09-18].
-        # APO 의 적응 가중치는 학습 중 값이 변해 이 비율이 흘러간다 — 실측 3.4 -> 14.4 (8K).
-        # 그래서 고정 계수가 아니라 **배치마다** U 쪽 lam 을 재조정해 목표 비율을 유지한다.
-        self.balance_ratio = balance_ratio
         # z0_mode: batch_mean = ELBO-KTO 의 Zero Compute Baseline (b0 = 배치 안 r̂ 의 평균).
         #   상수 baseline 중 분산 최적임이 증명돼 있다 [ELBO-KTO Lemma 1, 원문 직접 2026-09-12].
         #   mismatch = KTO 원래의 엇갈린 짝 추정. 우리 실측에서 r 과 척도가 달라 26->462 로
@@ -79,6 +74,19 @@ class APOLoss:
         #   — eps 축은 분산의 1.4% 뿐 [VRPO Prop 1 + 측정 2026-09-12].
         self.n_t = int(n_t)
         self.beta, self.beta_d, self.beta_u = beta, beta_d, beta_u
+        # undesirable 쪽 효용의 beta. None 이면 beta 하나를 양쪽에 쓴다(원문 그대로).
+        #
+        # 왜 가를 수 있게 뒀나 — KTO 의 beta 가 하나여도 되는 건 r 이 **무차원 로그비**라
+        # 클래스마다 척도가 같기 때문이다. 우리 r 은 T x (MSE_ref - MSE_theta) 라 척도가 갈린다:
+        # 실측 l_ref 중앙값이 시연 0.0062 · 배포성공 0.0331 · 교정 0.443 으로 71배 차이다
+        # [probe 2026-09-18, logs/apo_probe_r1b].
+        # 게다가 부호가 비대칭이다 — desirable 의 r 은 위로 유계(r <= T*MSE_ref, 교정은 이미
+        # 천장의 79%)인데 undesirable 은 아래로 무계다(beta=0.3 -> -114 · 0.05 -> -645, 둘 다
+        # x=32~34 에서야 멈춘다). 그래서 하나의 beta 로는 "U 를 일찍 포화시키면서 교정을 활성
+        # 구간에 두기" 가 불가능하다 — 교정 활성엔 beta <~ 0.057, U 조기 포화엔 큰 beta 가 필요하다.
+        # KTO 가 beta 에 준 의미는 "sigma' 가 살아 있는 폭" 이므로, 그 의미를 두 클래스 모두에서
+        # 성립시키려면 척도가 갈리는 축을 따라 beta 도 갈라야 한다.
+        self.beta_u_sigmoid = beta_u_sigmoid
         self.z0_lo, self.z0_hi = z0_clamp
         self.bc_weight = bc_weight
         self.ref_mode = ref_mode
@@ -214,19 +222,19 @@ class APOLoss:
         lam, wdiag = apo_weights(l_tilde, None, self.m_t, sign, mag, self.beta_d, self.beta_u)
         if self.undesirable_weight != 1.0:
             lam = torch.where(sign < 0, lam * self.undesirable_weight, lam)
-        if self.balance_ratio:
-            d, u = sign > 0, sign < 0
-            s_d, s_u = lam[d].sum().detach(), lam[u].sum().detach()
-            if s_d > 0 and s_u > 0:
-                lam = torch.where(u, lam * (s_d / (s_u * self.balance_ratio)), lam)
-        u = torch.sigmoid(self.beta * sign.to(r.dtype) * (r - z0))
+        b = self.beta if self.beta_u_sigmoid is None else torch.where(
+            sign > 0, self.beta, self.beta_u_sigmoid).to(r.dtype)
+        u = torch.sigmoid(b * sign.to(r.dtype) * (r - z0))
         loss = -(lam * u).mean()
         # 진단용 샘플별 값 — 배치 평균 로그만으로는 그룹별 포화 방향을 못 가른다 (2026-09-17)
         self.last = {"r": r.detach(), "z0": z0.detach(), "z0_raw": z0_raw.detach(), "lam": lam.detach(),
                      "u": u.detach(), "sign": sign, "cond_t": cond_t.detach(), "cond_r": cond_r,
                      "x0": x0, "dmask": dmask, "n_eff": n_eff, "k": probe_k}
 
-        with torch.no_grad():                     # 실효 비율 — 목표대로 유지되는지 로그로 본다
+        # D 와 U 가 손실을 나눠 갖는 비율. **KTO 식 (9) 의 개수 비율이 아니다** — 그쪽 n_D, n_U 는
+        # 데이터 개수이고 lam 은 클래스 상수다. 여기 lam 은 APO 의 샘플별 중요도라 물건이 다르다.
+        # 진단용으로만 본다 (2026-09-18 에 이 둘을 혼동해 balance_ratio 를 만들었다가 되돌렸다).
+        with torch.no_grad():
             _d, _u = lam[sign > 0].sum(), lam[sign < 0].sum()
             bal = float(_d / _u) if _u > 0 else float("nan")
         keep = sign != 0

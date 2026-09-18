@@ -108,7 +108,7 @@ def _build_finetune_loss(cfg, network):
         gripper_dim=a.get("gripper_dim", -1),
         undesirable_weight=a.get("undesirable_weight", 1.0),
         z0_min=a.get("z0_min", None),
-        balance_ratio=a.get("balance_ratio", None),
+        beta_u_sigmoid=a.get("beta_u_sigmoid", None),
         t_mode=a.get("t_mode", "uniform"))
 
 
