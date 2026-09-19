@@ -32,7 +32,10 @@ from robosuite.utils.transform_utils import axisangle2quat, mat2quat, quat2axisa
 from manibot.envs.ik import frame, roll, rot_z
 
 # ── 기하 ────────────────────────────────────────────────────────────────────
-PRE = 0.09          # 손잡이 위 대기 높이 [m]
+PRE = 0.075         # 손잡이 위 대기 높이 [m].  0.09 에서 낮췄다 — 같은 스텝으로 내려오면
+                    # 거리가 길수록 빨라져 책상에 부딪혔다 [영상 관찰 2026-09-19]
+GRAB_OUT = -0.0075  # 파지 지점을 손잡이 site 에서 **너트 반대쪽**으로 옮기는 거리 [m].
+                    # 고리 밖 자유 구간(35.6mm)의 중심에 손가락을 놓기 위한 값이다
 GRASP_DZ = 0.005    # 손잡이 site 보다 **얼마나 더 내려가서** 물나 [m].  손잡이 막대는 높이
                     # 20 mm(반치수 0.010)라 5 mm 는 막대 안이다.  site 높이 그대로 물면
                     # 손가락이 막대 윗변에 걸쳐 헐겁게 잡히고, 이송 중 너트가 그리퍼 안에서
@@ -62,7 +65,8 @@ J7_LIMIT = np.radians(164.0)   # 손목 마지막 관절(joint7, 범위 ±166°)
 # 스텝 수를 줄이면 같은 거리를 짧은 시간에 가므로 행동 크기·포화가 같이 따라온다.
 # ⚠ kp 를 올려 속도를 내면 안 된다 — 목표 주변에서 진동한다(2026-09-08 실측).
 T_PRE = 25          # 홈 -> 손잡이 위
-T_DOWN = 14         # 수직 하강 (짧고 정확하게)
+T_DOWN = 18         # 수직 하강.  14 -> 18. 대기 높이를 0.095 -> 0.075 로 낮춘 것과 합쳐
+                    # 하강 속도가 약 0.61 배가 된다 (거리 x0.79 / 스텝 x1.29)
 T_SETTLE = 4        # OSC 추종 오차가 가라앉기를 기다린다 — 파지 직전에만
 T_LIFT = 18         # 들어올리며 yaw 정렬까지 한 동작으로
 T_PEG = 28          # 봉 위로 이송
@@ -124,10 +128,14 @@ class SquareExpert:
         """
         u = np.random.uniform
         j = self.jitter
-        self.pre = u(0.07, 0.12) if j else PRE            # 손잡이 위 대기 높이
+        self.pre = u(0.06, 0.09) if j else PRE            # 손잡이 위 대기 높이
         self.clear = u(0.05, 0.10) if j else NUT_CLEAR      # 이송 시 너트 여유 (너트 기준)
         self.engage = u(0.030, 0.055) if j else ENGAGE      # 얼마나 물리면 놓나
-        self.grab = u(-0.008, 0.008) if j else 0.0          # 손잡이 축 위 파지 지점 (막대 반길이 25mm)
+        # 손잡이 site 는 막대 **전체** 중심(몸체 x=0.054)이라 사각 고리 끝(x=0.0437)에서
+        # 10.3mm 밖에 안 떨어져 있다. 여기서 +8mm 흔들면 고리에서 2.3mm — 손가락이 너트를
+        # 누른다 [영상 관찰 2026-09-19]. 고리 밖 자유 구간은 x [0.0437, 0.0793] 이고 그
+        # 중심이 0.0615 이므로, site 에서 **너트 반대쪽으로 7.5mm** 옮긴 자리를 기준으로 삼는다.
+        self.grab = u(-0.012, -0.003) if j else GRAB_OUT   # 손잡이 축 위 파지 지점 (+ 가 너트 쪽)
         self.gz = u(0.003, 0.008) if j else GRASP_DZ        # 손잡이 site 아래로 내려가 무는 깊이
         self.tscale = u(0.85, 1.35) if j else 1.0           # 구간 시간 배율 -> 길이·속도 편차
         self.via = u(-0.05, 0.05, size=2) if j else np.zeros(2)  # 봉으로 가는 경유점 흔들기
@@ -412,9 +420,13 @@ class SquareExpert:
         # 봉으로 곧장 가지 않고 경유점을 하나 둔다 — 매번 같은 직선이면 그 구간이 과적합된다
         mid = [(p[0] + peg[0] + off[0]) / 2 + self.via[0],
                (p[1] + peg[1] + off[1]) / 2 + self.via[1], z_eef]
-        yield from self._goto(mid, R_hold, 1, "to_peg", self._T(T_PEG) // 2)
+        # 앞 40% 로 멀리 가고 뒤 60% 로 천천히 붙는다 — 반반으로 나누면 봉 근처에서도 속도가
+        # 남아 팔이 명령점을 못 따라잡고, 다음 정렬 구간이 **뒤처진 실제 위치에서 다시 시작**해
+        # 화면에서 멈췄다가 튀는 것으로 보인다 [영상 관찰 2026-09-19]
+        n_far = int(self._T(T_PEG) * 0.4)
+        yield from self._goto(mid, R_hold, 1, "to_peg", n_far)
         yield from self._goto([peg[0] + off[0], peg[1] + off[1], z_eef], R_hold, 1,
-                              "to_peg", self._T(T_PEG) - self._T(T_PEG) // 2)
+                              "to_peg", self._T(T_PEG) - n_far)
         # ⚠ **정렬을 확인하고 내려간다.** _goto 는 정해진 스텝만 쓰고 끝나서 수렴 전에
         # 삽입으로 넘어갈 수 있고, 그러면 너트가 봉 옆에 걸린다 (2026-09-08 사용자 관찰).
         # ⭐ **너트 실제 위치를 보고** 맞춘다. 파지 직후 잰 off 로 목표를 만들면 너트가 그리퍼

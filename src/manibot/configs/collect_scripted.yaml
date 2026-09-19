@@ -21,3 +21,9 @@ max_steps: 2500
 keep_failures: false
 # 너트 yaw 를 360° 에 고르게 깐다. 무작위면 50개에 최대 28° 구멍이 생기는데 격자면 7.2° 다.
 yaw_grid: false
+
+# 너트 위치를 고정 격자로 — [[x, y], ...] (table_offset 기준 상대, m). null 이면 배치 초기화 그대로.
+# 실물 실험(6위치 x 2회)을 옮긴 것이다: 지점을 멀리 떨어뜨리고 지점당 여러 번 모아 일관성을 준다.
+xy_grid: null
+# 너트 yaw 를 이 각도(도)로 고정. null 이면 배치 초기화의 360° 무작위 그대로.
+fixed_yaw_deg: null

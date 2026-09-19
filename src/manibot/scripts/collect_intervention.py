@@ -154,7 +154,7 @@ def collect(cfg: DictConfig):
     ep_success = dd.read_success(ds.root)
     kept0 = len(ep_success)
     # 이어받기 — 기존 sim_states 를 읽어 길이를 맞춘다(없으면 None 으로 채운다).
-    ep_init_states, ep_intv_states, ep_intv_steps = _read_states(ds.root, kept0)
+    ep_init_states, ep_intv_states, ep_intv_steps, ep_init_idx = _read_states(ds.root, kept0)
     # 프레임별 sim 상태 · 제어 주체(expert 단계) · 반환 후보 step — 수집한 **그 상황**을 정확히
     # 복원해 다시 돌려보기 위한 것이다. init·intv 두 시점만으로는 U 구간 시작을 못 되살렸다
     # (기록된 행동 재생은 개입 시점에서 0.017~0.16 어긋났다) [2026-09-17]
@@ -180,11 +180,13 @@ def collect(cfg: DictConfig):
             logger.info(f"[중단] 에피소드 상한 {cfg.n_episodes} 도달")
             break
         obs = env.reset()
+        cur_idx = -1
         if _init_states is not None:
             # kept0+kept = 지금까지 **보관한** 에피소드 수 = 다음에 쓸 D 의 인덱스.
             # 폐기(r)해도 전진하지 않으므로 같은 상황을 다시 찍게 된다 — 라운드마다
             # D 를 똑같이 덮으려면 그래야 한다.
-            obs = env.reset_to({"states": _init_states[(kept0 + kept) % len(_init_states)]})
+            cur_idx = (kept0 + kept) % len(_init_states)
+            obs = env.reset_to({"states": _init_states[cur_idx]})
         trig.reset_episode()
         # 에피소드마다 sampling seed 를 준다 — 평가 하네스(에피소드별 seed)와 같은 규약.
         # 비동기 추론이라 타이밍이 끼어 완전 재현은 안 되지만, 앞 에피소드 길이가 뒤 noise 를
@@ -294,6 +296,7 @@ def collect(cfg: DictConfig):
         ep_init_states.append(init_state)
         ep_intv_states.append(intv_state)
         ep_intv_steps.append(intv_step)
+        ep_init_idx.append(cur_idx)
         k = f"ep{kept0 + kept:04d}"
         frame_store[f"{k}_state"] = np.stack(f_states)
         frame_store[f"{k}_ctrl"] = np.asarray(f_ctrl)
@@ -310,14 +313,16 @@ def collect(cfg: DictConfig):
             ds.finalize()                  # 여기까지는 죽어도 남는다
             # 성공 목록도 여기서만 쓴다 — 매번 쓰면 못 읽는 에피소드까지 세어 어긋난다
             dd.write_success(ds.root, ep_success)
-            _write_states(ds.root, ep_init_states, ep_intv_states, ep_intv_steps)
+            _write_states(ds.root, ep_init_states, ep_intv_states, ep_intv_steps,
+                          ep_init_idx, cfg.get("init_states") or "")
             _write_frames(ds.root, frame_store)
             ds = _open()
 
     # finalize() 를 빠뜨리면 잘린 parquet 이 남는다 — save_episode 가 백그라운드로 쓴다.
     ds.finalize()
     dd.write_success(ds.root, ep_success)
-    _write_states(ds.root, ep_init_states, ep_intv_states, ep_intv_steps)
+    _write_states(ds.root, ep_init_states, ep_intv_states, ep_intv_steps,
+                          ep_init_idx, cfg.get("init_states") or "")
     _write_frames(ds.root, frame_store)
     if pool is not None:
         pool.shutdown(wait=False, cancel_futures=True)
@@ -345,24 +350,30 @@ def _pack_states(xs):
     return a, ok
 
 
-def _write_states(root, inits, intvs, steps):
+def _write_states(root, inits, intvs, steps, idxs, src=""):
+    # init_idx = 고정 초기상태 파일에서 **몇 번째**를 썼는가 (고정을 안 쓰면 -1).
+    # 상태 통째(init)는 이미 남기지만, 인덱스가 있어야 라운드끼리 "같은 순서를 밟았는가" 를
+    # 대조할 수 있다. 인덱스만으론 어느 파일의 몇 번인지 모호하므로 파일 경로도 같이 남긴다.
     ia, iok = _pack_states(inits)
     va, vok = _pack_states(intvs)
     np.savez(Path(root) / "sim_states.npz", init=ia, init_ok=iok,
-             intv=va, intv_ok=vok, intv_step=np.asarray(steps, dtype=np.int64))
+             intv=va, intv_ok=vok, intv_step=np.asarray(steps, dtype=np.int64),
+             init_idx=np.asarray(idxs, dtype=np.int64), init_src=str(src))
 
 
 def _read_states(root, n):
     """이어받기용. 길이가 n 이 되게 앞을 채워 돌려준다."""
     f = Path(root) / "sim_states.npz"
     if n == 0 or not f.exists():
-        return [None] * n, [None] * n, [-1] * n
+        return [None] * n, [None] * n, [-1] * n, [-1] * n
     d = np.load(f)
     ini = [d["init"][i] if d["init_ok"][i] else None for i in range(len(d["init_ok"]))]
     itv = [d["intv"][i] if d["intv_ok"][i] else None for i in range(len(d["intv_ok"]))]
     stp = list(d["intv_step"])
+    idx = list(d["init_idx"]) if "init_idx" in d else [-1] * len(ini)   # 이 필드 이전 데이터
     pad = n - len(ini)
-    return (ini + [None] * pad)[:n], (itv + [None] * pad)[:n], (stp + [-1] * pad)[:n]
+    return ((ini + [None] * pad)[:n], (itv + [None] * pad)[:n],
+            (stp + [-1] * pad)[:n], (idx + [-1] * pad)[:n])
 
 
 # `sim_frames.npz` = 에피소드 i 마다 epXXXX_state (T, D) · epXXXX_ctrl (T,) "policy" 또는 expert

@@ -25,17 +25,30 @@ from manibot.utils.seeding import seed_sim_env
 from manibot.utils.task_utils import register_sim_modules, resolve, sim_controller_config
 
 
-def _set_nut_yaw(env, yaw):
-    """SquareNut 의 yaw 를 지정한다 (free joint 라 qpos 로 직접 쓴다).
+def _set_nut_pose(env, x=None, y=None, yaw=None):
+    """SquareNut 의 위치·yaw 를 지정한다 (free joint 라 qpos 로 직접 쓴다). None 인 축은 둔다.
 
-    **왜**: 배치 초기화가 yaw 를 360° 균등 무작위로 준다. 50개를 무작위로 뽑으면 원 위에
-    구멍이 생겨(최대 빈 구간 기댓값 약 360*ln(50)/50 = 28°) 그 구간의 파지 자세를 못 배운다.
-    격자로 깔면 같은 50개로 간격이 7.2° 가 된다 — 개수를 안 늘리고 커버리지를 4배 촘촘하게.
-    ⚠ 위치(x,y)는 건드리지 않는다. 물체 간 겹침을 배치 초기화가 이미 피해 놨기 때문이다.
+    **yaw 를 왜 건드리나**: 배치 초기화가 yaw 를 360° 균등 무작위로 준다. 평가 200판을 각도
+    60° 구간으로 나누니 base 성공률이 27%~74% 로 47%p 벌어졌고, 위치 구간 간 편차(8.5%)보다
+    방향 구간 간 편차(15.1%)가 2배였다. 게다가 학습이 방향별로 +37%p/-28%p 로 주고받아 합이
+    0 이 된다 — 손실을 아홉 가지로 바꿔도 성공률이 안 움직인 이유다 [측정 2026-09-19].
+    방향을 고정하면 그 축이 사라져 라운드 효과를 **잴 수 있는** 영역이 된다.
+
+    **위치를 왜 건드리나**: 공개 데이터의 너트 구역이 x 5mm · y 11.5cm 짜리 **띠**다(공개 200개
+    전수 확인). 방향을 고정하면 남는 변이가 1차원뿐이라, 너트 긴 축(12.3cm)의 절반씩 x 를
+    앞뒤로 넓혀 실물 실험과 같은 2D 직사각 구역으로 만든다.
+
+    ⚠ 원형 너트는 y<0 쪽에 놓이므로 이 구역(y>0)과 안 겹친다 [배치 확인 2026-09-19].
     """
     m = env.sim.model
     adr = m.jnt_qposadr[m.joint_name2id("SquareNut_joint0")]
-    env.sim.data.qpos[adr + 3:adr + 7] = [np.cos(yaw / 2), 0.0, 0.0, np.sin(yaw / 2)]  # (w,x,y,z)
+    off = env.model.mujoco_arena.table_offset
+    if x is not None:
+        env.sim.data.qpos[adr + 0] = x + off[0]
+    if y is not None:
+        env.sim.data.qpos[adr + 1] = y + off[1]
+    if yaw is not None:
+        env.sim.data.qpos[adr + 3:adr + 7] = [np.cos(yaw / 2), 0.0, 0.0, np.sin(yaw / 2)]  # (w,x,y,z)
     env.sim.forward()
 
 
@@ -82,9 +95,17 @@ def collect(cfg: DictConfig):
         while kept < cfg.n_demos:
             tried += 1
             env.reset()
+            # kept 로 색인한다 — 실패해 버려도 같은 격자점을 다시 시도해 커버리지가 정확해진다
             if cfg.yaw_grid:
-                # kept 로 색인한다 — 실패해 버려도 같은 격자점을 다시 시도해 커버리지가 정확해진다
-                _set_nut_yaw(env, -np.pi + 2 * np.pi * (kept + 0.5) / cfg.n_demos)
+                _set_nut_pose(env, yaw=-np.pi + 2 * np.pi * (kept + 0.5) / cfg.n_demos)
+            if cfg.get("xy_grid") or cfg.get("fixed_yaw_deg") is not None:
+                g = _kw(cfg.get("xy_grid")) or None
+                gx = gy = None
+                if g:
+                    gx, gy = g[kept % len(g)]      # 지점을 돌아가며 채운다 (중간에 끊겨도 고르게)
+                fy = cfg.get("fixed_yaw_deg")
+                _set_nut_pose(env, x=gx, y=gy,
+                              yaw=None if fy is None else np.radians(float(fy)))
             ex = Expert(env)
             # 시뮬레이터 예행 동작 — **기록 전에** 한다. 프로세스 안에서 첫 파지·당기기만
             # 결과가 다르다(서랍 0.08cm vs 이후 11.84cm, 결정론적) [실측 2026-09-06].

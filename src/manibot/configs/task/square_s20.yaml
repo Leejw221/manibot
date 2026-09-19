@@ -1,0 +1,44 @@
+# @package _global_
+
+# **난이도를 통제한 square** — 실물 Diffusion-SIRIUS 실험 설계를 시뮬로 옮긴 것이다.
+#
+# 왜 이 task 가 따로 필요한가 [측정 2026-09-19]:
+#   공개 square-ph 로는 손실 쪽 요소를 아홉 가지(APO 변형 8 + 순수 BC)로 바꿔도 성공률이
+#   103~113/200 안에 갇혀 움직이지 않았다.  짝비교 검출 문턱이 약 14판이라 **무엇을 해도
+#   확정이 안 되는 영역**이었다.  원인을 단계별로 분해하니:
+#     · 너트 각도 60도 구간별 base 성공률이 27%~74% 로 47%p 벌어진다 (위치 구간은 21%p)
+#     · 학습이 방향별로 +37%p / -28%p 로 주고받아 **합이 0** 이 된다 — 능력을 더하는 게
+#       아니라 방향들 사이에서 재분배한다
+#   그래서 **방향 축을 고정**해 그 상쇄를 없애고, 라운드 효과를 잴 수 있는 영역으로 옮긴다.
+#
+# 실물 실험(cube swap)과의 대응:
+#   실물 6 위치 x 2회 = 12 시연  ->  여기 5 위치 x 4회 = 20 시연
+#   실물 "6 위치가 만드는 직사각형 안에서 무작위"  ->  여기도 같은 구역 안 무작위
+#
+# 수집 명령 (재현용):
+#   python -m manibot.scripts.collect_scripted task=square_ph50 n_demos=20 seed=0 \
+#     out_path=data/square_scripted20/demos.hdf5 fixed_yaw_deg=180 \
+#     "xy_grid=[[-0.1765,0.1100],[-0.1765,0.2250],[-0.0485,0.1100],[-0.0485,0.2250],[-0.1125,0.1675]]" \
+#     "+task.sim.env_kwargs={initialization_noise:null}"
+#
+# 구역:  x [-0.1765, -0.0485] (12.8 cm) · y [+0.1100, +0.2250] (11.5 cm) · yaw = +180도 고정
+#   공개 데이터의 너트 구역은 x 5mm · y 11.5cm 짜리 **띠**다(공개 200개 전수 확인).
+#   방향을 고정하면 변이가 1차원뿐이라, 너트 긴 축(12.3cm)의 절반씩 x 를 앞뒤로 넓혀
+#   실물과 같은 2D 직사각 구역으로 만들었다.
+
+defaults:
+  - robomimic_square
+  - _self_
+
+task:
+  name: square_s20
+  hdf5_path: ${oc.env:MANIBOT_DATASETS_DIR,data}/square_scripted20/demos.hdf5
+  dataset_root: ${oc.env:MANIBOT_DATASETS_DIR,data}/square_s20_zarr
+  sim:
+    # ⚠ 사용자 지시(2026-09-19) 로 300.  다만 이 저장소는 전에 같은 문제로 scripted 쪽을
+    #   500 으로 올린 적이 있다(square_scripted.yaml) — 근거를 남겨 둔다:
+    #     이번 시연 20개: 평균 200 · 최장 244 프레임  -> 300 은 최장 대비 1.23배
+    #     공개 square-ph: 평균 151 · 최장 236, horizon 400 -> 최장 대비 1.69배
+    #   여유가 공개 설정보다 좁으므로, 실패가 "못 한다" 가 아니라 "못 끝낸다" 로 섞일 수 있다.
+    #   평가 결과에서 시간 초과 비율을 같이 봐야 한다.
+    max_steps: 300

@@ -1,0 +1,28 @@
+# @package _global_
+
+# **난이도를 통제한 square — 라운드 1 학습 데이터** (시연 20 + 배포 31).
+#
+# 시연  data/square_s20_zarr          3,993 프레임 · 51 중 앞 20 에피소드
+# 배포  data/square_s20_deploy_r1_zarr 6,180 프레임 · 개입 69% · 성공 31/31
+#        -> 합쳐 10,173 프레임 · 51 에피소드
+#
+# 배포 초기상태는 **평가 200판에서 뽑았다** [사용자 지시 2026-09-19].
+#   deploy_init_states_square_s20_from_eval200.npz 의 앞 31개 =
+#   평가 판 [2,9,10,16,17,19,22,31,33,47,54,60,62,77,86,87,90,93,105,111,112,114,
+#            119,137,154,163,169,182,186,187,198]
+#   겹침을 피하는 대신 **측정한다** — 라운드 평가 200판을 '본 31판 / 못 본 169판' 으로
+#   갈라 보면 성장이 일반화인지 암기인지 갈린다.
+#
+# ⚠ stats 는 시연 것을 그대로 쓴다 (merge_zarr 가 그렇게 둔다) — pi_ref 와 정규화가
+#   어긋나면 로그비가 의미를 잃는다.
+
+defaults:
+  - robomimic_square
+  - _self_
+
+task:
+  name: square_s20_r1
+  hdf5_path: ${oc.env:MANIBOT_DATASETS_DIR,data}/square_scripted20/demos.hdf5
+  dataset_root: ${oc.env:MANIBOT_DATASETS_DIR,data}/square_s20_r1_zarr
+  sim:
+    max_steps: 300

@@ -95,6 +95,16 @@ def _build_finetune_loss(cfg, network):
             "ref_mode=epoch_frozen(A1) 은 r 이 상수라 utility 로 gradient 가 안 간다 — "
             "bc_weight > 0 이어야 학습이 된다.")
     lab = np.load(ft.labels)
+    # 그룹별 wandb 지표용 — 시연/롤아웃을 가르려면 청크의 에피소드 번호가 필요하다.
+    # 샘플러(dataset_utils)가 풀을 나눌 때 쓰는 것과 **같은 규칙**으로 만든다.
+    # 샘플러의 n_demo_episodes 와 **별개**다 — 그쪽은 풀을 4개로 쪼개 배치 구성을 바꾸지만
+    # 이건 지표를 가르는 데만 쓴다. 섞으면 "로그를 보려다 실험 조건이 바뀌는" 일이 생긴다.
+    n_demo_log = ft.get("n_demo_episodes", None) or a.get("n_demo_log", 0)
+    chunk_is_demo = None
+    if n_demo_log:
+        import zarr
+        ep_all = np.asarray(zarr.open(str(cfg.task.dataset_root), "r")["data"]["episode_index"]).ravel()
+        chunk_is_demo = ep_all[:len(lab["S"])] < int(n_demo_log)
     return APOLoss(
         ref=ref,
         m_t=torch.from_numpy(np.load(ft.t_stats)).float(),
@@ -109,7 +119,11 @@ def _build_finetune_loss(cfg, network):
         undesirable_weight=a.get("undesirable_weight", 1.0),
         z0_min=a.get("z0_min", None),
         beta_u_sigmoid=a.get("beta_u_sigmoid", None),
-        t_mode=a.get("t_mode", "uniform"))
+        t_mode=a.get("t_mode", "uniform"),
+        reward_mode=a.get("reward_mode", "mse"),
+        n_ode=a.get("n_ode", 20), n_hutch=a.get("n_hutch", 1),
+        chunk_is_demo=chunk_is_demo,
+        logratio_scale=a.get("logratio_scale", 1.0))
 
 
 def _build_ema(policy, cfg):

@@ -37,7 +37,23 @@ class APOLoss:
                  beta_u=8.0, z0_clamp=(-5.0, 5.0), bc_weight=0.0, ref_mode="live",
                  expert_mag=1.0, z0_mode="batch_mean", n_t=8, use_mag=True,
                  mask_gripper_u=True, gripper_dim=-1, undesirable_weight=1.0,
-                 z0_min=None, t_mode="uniform", beta_u_sigmoid=None):
+                 z0_min=None, t_mode="uniform", beta_u_sigmoid=None,
+                 reward_mode="mse", n_ode=20, n_hutch=1, chunk_is_demo=None,
+                 logratio_scale=1.0):
+        # reward_mode: "mse"(기존) = T*(MSE_ref - MSE_theta) · "logratio" = log pi_theta - log pi_ref
+        #   mse 는 MSE_theta >= 0 이라 위로 유계고(r <= T*MSE_ref) 그 천장이 그룹마다 74배 갈린다
+        #   — 시연 0.64 / 교정 47.6. 그래서 "기준 모델이 이미 잘하는 샘플"은 아무리 잘해도 reward
+        #   를 못 받는다. logratio 는 유도(KL 제약 하 reward 최대화의 최적해)가 요구하는 바로 그
+        #   양이고 위로 유계가 아니다. 교정/시연 범위 비가 154배 -> 5.4배 [측정 2026-09-19].
+        self.reward_mode = reward_mode
+        self.n_ode, self.n_hutch = n_ode, n_hutch
+        # 그룹별 wandb 지표용. 시연/롤아웃을 가르려면 에피소드 번호가 필요하다.
+        self.chunk_is_demo = chunk_is_demo
+        # logratio 손실은 계수(<=0.0375) x l_theta(0.01~0.5) 라 기존 -(lam*u).mean()(약 0.5)보다
+        # 50~1000배 작다. 같은 lr 이면 실효 학습률이 그만큼 죽는다. 배치 평균으로 정규화하면
+        # **포화 신호가 사라지므로**(다 포화해도 손실이 안 준다) 고정 상수로 둔다. 값은 step 0 의
+        # grad_norm 을 기존 설정과 맞춰서 정한다.
+        self.logratio_scale = logratio_scale
         self.ref = ref
         self.m_t = m_t
         # 샘플러가 푸는 것과 **같은 배열**. 기준이 둘이면 배치 구성이 손실에서 재현되지 않는다.
@@ -156,7 +172,7 @@ class APOLoss:
         if self.t_mode == "lam_is" and self._is is None:
             self._is = _lam_is_tables(m.noise_scheduler, x0.device)
 
-        se_diff, l1_acc = 0.0, 0.0
+        se_diff, l1_acc, se_the = 0.0, 0.0, 0.0
         probe_k = []  # 진단용: k 번째 추첨의 (t, eps, 청크별 ref 오차). 학습 경로에는 안 쓰인다
         for _ in range(self.n_t):
             if self.t_mode == "lam_is":
@@ -170,7 +186,11 @@ class APOLoss:
                 e_ref, _, _ = unet_out(self.ref.diffusion, cond_r, x0, t, eps)
             sq = lambda e: (((eps - e) ** 2) * dmask).sum(dim=(1, 2)) / n_eff
             s_ref = sq(e_ref)
-            d_sq = s_ref - sq(e_the)
+            s_the = sq(e_the)
+            d_sq = s_ref - s_the
+            # logratio 모드의 **기울기는 여기서만** 온다 — 계수는 detach 된 상수이므로
+            # theta 가 들어 있는 항이 이 디노이징 손실 하나뿐이다.
+            se_the = se_the + s_the
             probe_k.append((t, eps, s_ref))
             se_diff = se_diff + (self._is[2][t] * d_sq if self.t_mode == "lam_is" else d_sq)
             # 가중치용 오차에는 마스크를 안 건다 — APO 의 adaptive weight 는 7차원 전부의 L1 이다
@@ -188,8 +208,29 @@ class APOLoss:
 
         # ③ beta 는 sigma **밖에** 둔다. r 안에 넣으면 z0 클램프·grad_clip 같은 상수가
         #    조용히 beta 에 딸려 움직인다 (실제로 beta 1->10 에서 클램프가 10배 조여졌다).
-        r = T * se_diff / self.n_t                      # ELBO margin (beta 없음)
+        r_mse = T * se_diff / self.n_t                  # ELBO margin (beta 없음)
+        l_the = se_the / self.n_t                       # 샘플별 디노이징 손실 — **기울기가 산다**
         l_tilde = l1_acc / self.n_t
+        r = r_mse
+
+        # ⑤' logratio 모드 — probability flow ODE 로 log pi 를 정확히 구한다 (Eq. 39/40).
+        #    파라미터 기울기는 흐르지 않는다: 이 값은 **계수**만 정하고 기울기는 l_the 에서 온다.
+        #    그래서 ODE 를 역전파할 필요가 없다 (교수님 43:07 "학습 로스에서는 계산을 못 할 것 같다").
+        if self.reward_mode == "logratio":
+            from manibot.losses.logprob_reward import log_prob
+            sch = m.noise_scheduler
+            betas = sch.betas.to(x0.device).double()
+            abar = sch.alphas_cumprod.to(x0.device).double()
+            seed = int(torch.randint(0, 2 ** 31 - 1, (1,), device="cpu").item())
+            with torch.no_grad():
+                # theta 와 ref 에 **같은 시드** -> 같은 Hutchinson 벡터 -> 차의 분산이 준다
+                g1 = torch.Generator(device=x0.device).manual_seed(seed)
+                lp_the = log_prob(m.unet, cond_t, x0, betas, abar, T,
+                                  self.n_ode, self.n_hutch, g1)
+                g2 = torch.Generator(device=x0.device).manual_seed(seed)
+                lp_ref = log_prob(self.ref.diffusion.unet, cond_r, x0, betas, abar, T,
+                                  self.n_ode, self.n_hutch, g2)
+                r = (lp_the - lp_ref).to(r_mse.dtype)
 
         # ⑤ baseline
         if self.z0_mode == "none":
@@ -225,7 +266,18 @@ class APOLoss:
         b = self.beta if self.beta_u_sigmoid is None else torch.where(
             sign > 0, self.beta, self.beta_u_sigmoid).to(r.dtype)
         u = torch.sigmoid(b * sign.to(r.dtype) * (r - z0))
-        loss = -(lam * u).mean()
+        if self.reward_mode == "logratio":
+            # KTO 손실의 **1차 선형화**. 원래 기울기는
+            #     dL/dtheta = -( lam*b*sign*sigma'(x) * dr/dtheta ).mean()
+            # 인데 대괄호 안은 theta 에 대한 1차 항이 아니라 고정 시점에서 상수로 둘 수 있고,
+            # dr/dtheta = d(log pi_theta)/dtheta 이며 **로그확률을 올리는 표준 기울기가
+            # 디노이징 손실을 내리는 기울기**다. 그래서 아래 식은 같은 기울기를 준다.
+            #   desirable(sign=+1): 계수>0 x l_the -> l_the 를 줄인다(배운다)
+            #   undesirable(sign=-1): 계수<0 x l_the -> l_the 를 키운다(밀어낸다)
+            coef = (lam * b * u * (1.0 - u)).detach()
+            loss = (coef * sign.to(r.dtype) * l_the).mean() * self.logratio_scale
+        else:
+            loss = -(lam * u).mean()
         # 진단용 샘플별 값 — 배치 평균 로그만으로는 그룹별 포화 방향을 못 가른다 (2026-09-17)
         self.last = {"r": r.detach(), "z0": z0.detach(), "z0_raw": z0_raw.detach(), "lam": lam.detach(),
                      "u": u.detach(), "sign": sign, "cond_t": cond_t.detach(), "cond_r": cond_r,
@@ -245,6 +297,32 @@ class APOLoss:
                "label_frac": keep.float().mean().item(), "bal": bal, **wdiag}
         for nm, sel in (("r_d", sign > 0), ("r_u", sign < 0)):
             out[nm] = r[sel].mean().item() if sel.any() else float("nan")
+
+        # 그룹별 지표 — 배치 평균만 보면 "어느 그룹이 꺼졌나" 를 못 가른다. beta 를 포화로 정했으므로
+        # dsig(= sigma'(x)/0.25) 가 그 선택의 직접 검정이다: U 는 꺼지고 시연은 살아 있어야 한다.
+        with torch.no_grad():
+            x_sig = (b * sign.to(r.dtype) * (r - z0)).detach()
+            dsig = (u * (1.0 - u) / 0.25).detach()
+            coef_abs = (lam * b * u * (1.0 - u)).detach().abs()
+            tot = coef_abs.sum().clamp_min(1e-12)
+            has_np = np.zeros(len(sign_np), dtype=bool) if has is None else np.asarray(has)
+            dem = (np.asarray(self.chunk_is_demo)[idx] if self.chunk_is_demo is not None
+                   else np.ones(len(sign_np), dtype=bool))
+            groups = {"intv": has_np & (sign_np > 0), "U": has_np & (sign_np < 0),
+                      "demo": (~has_np) & dem, "rollout": (~has_np) & (~dem)}
+            for g, msk in groups.items():
+                if not msk.any():
+                    continue
+                sel = torch.as_tensor(msk, device=r.device)
+                out[f"r/{g}"] = r[sel].median().item()
+                out[f"x/{g}"] = x_sig[sel].median().item()
+                out[f"dsig/{g}"] = dsig[sel].median().item()
+                out[f"coef_share/{g}"] = (coef_abs[sel].sum() / tot).item()
+                out[f"l_the/{g}"] = l_the[sel].detach().median().item()
+            if self.reward_mode == "logratio":
+                out["r_mse_mean"] = r_mse.mean().item()      # 옛 축도 같이 본다 (대조용)
+                out["lp_the"] = lp_the.mean().item()
+                out["lp_ref"] = lp_ref.mean().item()
 
         if self.bc_weight:
             l_bc = ((eps - e_the) ** 2).mean()

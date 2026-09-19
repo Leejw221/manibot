@@ -159,6 +159,20 @@ finetune:
     expert_desirable: true
     expert_mag: 1.0         # 그들의 |S| 는 0 이라 대신 쓰는 가중. 개입 청크의 중앙값 1.11
     # batch_mean = ELBO-KTO 의 Zero Compute Baseline (상수 baseline 중 최적).
-    # mismatch = KTO 원래 방식 — 우리 실측에서 z0 가 26->462 로 폭주해 포화시켰다.
+    # mismatch = KTO 원래 방식. 주석에 "26->462 폭주" 로 기각돼 있었으나 2026-09-19 확인 결과
+    #   ① 그 설정으로 **학습한 적이 없고**(저장된 config 98개 중 0개) ② 당시 구현이 n_t 루프
+    #   밖의 t·eps 를 써서 1샘플 추정이었고 ③ 축약도 r 과 달랐다. 기각은 방법이 아니라 구현에 대한 것.
     z0_mode: batch_mean
     n_t: 8                  # 샘플당 시점 수. t 추첨이 MC 분산의 91%, v ∝ 1/n_t 확인
+    # reward_mode: mse(기존) = T*(MSE_ref - MSE_theta) · logratio = log pi_theta - log pi_ref
+    #   mse 는 MSE_theta >= 0 이라 위로 유계고 천장이 그룹마다 74배 갈린다(시연 0.64 / 교정 47.6)
+    #   -> "기준 모델이 이미 잘하는 샘플"이 아무리 잘해도 reward 를 못 받는다. logratio 는
+    #   probability flow ODE 로 정확히 구하며 그 천장이 없다
+    #   [Song et al., Score-Based Generative Modeling through SDEs, Eq.13/39/40 · 측정 2026-09-19].
+    reward_mode: mse
+    n_ode: 20               # RK4 고정 스텝. 20 vs 80 차이가 그룹 중앙값 기준 0~7%
+    n_hutch: 1              # Skilling-Hutchinson 표본. 1 vs 4 가 계수에 5% 미만 영향
+    logratio_scale: 1.0     # step 0 grad_norm 을 mse 설정과 맞춰 정한다 (임의 상수 아님)
+    # 지표를 시연/롤아웃으로 가르기 위한 경계. **샘플러의 finetune.n_demo_episodes 와 다르다**
+    # — 그쪽은 풀을 4개로 쪼개 배치 구성을 바꾸고, 이건 wandb 지표만 가른다.
+    n_demo_log: 50
