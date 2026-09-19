@@ -32,8 +32,26 @@ def split_pools(sign, has_intervention, allowed=None, is_demo=None):
     +90% -> sf 39]. 시연에 고정 할당량을 주면 그 축이 라운드와 무관해진다.
 
     sign: (N,) `preference()` 가 낸 부호. has_intervention: (N,) 그 청크가 속한
-    에피소드에 개입이 있었는지. 개입이 없는 데이터(시연·개입없음 롤아웃)는 S=0 이라
-    부호로는 안 갈리므로 이 플래그로 correct 에 넣는다.
+    에피소드에 개입이 있었는지.
+
+    **correct 판정은 프레임 단위다** [APO 공개 코드 대조 2026-09-20,
+    dataset/balance_apo_dataset.py]. 원문은 `is_human` 으로 프레임마다 가른다:
+        is_human == 2  -> correct        (정책이 낸 행동. 개입이 안 필요했던 구간)
+        is_human == 1  -> intervention   (사람 교정)
+        첫 개입 직전 K -> incorrect      (correct 에서 꺼내 옮긴다)
+    그리고 `is_first_human` 이 is_human==2 에서 리셋되므로, **개입이 여러 번이면 각각
+    자기 K 프레임 창만 incorrect 가 되고 나머지 정책 구간은 correct 로 남는다.**
+
+    우리는 전에 `~has` (= 에피소드에 개입이 아예 없음) 로 판정했는데, 그러면 개입이
+    한 번이라도 있는 에피소드의 **정책 행동이 통째로 버려진다**. 성공률 22.5% 짜리
+    base 로는 거의 모든 배포 에피소드에 개입이 들어가므로, 실측에서 correct 풀 4,012 중
+    배포 정책 행동이 **166 개(4.1%)** 뿐이었다 — 나머지 852 개가 버려졌다
+    [측정 2026-09-20]. 그래서 배치 64 개 중 정책 행동이 1.3 개였고, "계속 이렇게 해라"
+    를 가르치는 표본이 사실상 없었다.
+
+    sign == 0 인 청크가 곧 원문의 is_human==2 다 — 개입 경계에서 멀어 recovery
+    confidence 가 0 으로 감쇠한 정책 구간이다. 우리 데이터에서 `has & sign==0` 852 개가
+    **전부 action_mode==0(정책) 프레임**임을 확인했다(개입 프레임은 섞이지 않았다).
     """
     sign = np.asarray(sign)
     has = np.asarray(has_intervention, dtype=bool)
@@ -44,12 +62,14 @@ def split_pools(sign, has_intervention, allowed=None, is_demo=None):
         ok[:] = False; ok[np.asarray(allowed)] = True
     inter = np.where(ok & has & (sign > 0))[0]
     incorr = np.where(ok & has & (sign < 0))[0]
+    # correct = 개입 없는 에피소드(시연) + **개입 에피소드의 개입-먼 정책 구간**
+    is_corr = (~has) | (sign == 0)
     if is_demo is None:
-        correct = np.where(ok & ~has)[0]
-        return correct, inter, incorr      # sign==0 인 보류 청크는 어디에도 안 들어간다
+        correct = np.where(ok & is_corr)[0]
+        return correct, inter, incorr
     d = np.asarray(is_demo, dtype=bool)
-    demo = np.where(ok & ~has & d)[0]
-    rollout = np.where(ok & ~has & ~d)[0]
+    demo = np.where(ok & is_corr & d)[0]
+    rollout = np.where(ok & is_corr & ~d)[0]
     return demo, rollout, inter, incorr
 
 

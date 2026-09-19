@@ -279,7 +279,10 @@ class APOLoss:
         else:
             loss = -(lam * u).mean()
         # 진단용 샘플별 값 — 배치 평균 로그만으로는 그룹별 포화 방향을 못 가른다 (2026-09-17)
-        self.last = {"r": r.detach(), "z0": z0.detach(), "z0_raw": z0_raw.detach(), "lam": lam.detach(),
+        # l_the 는 **기울기가 살아 있는 채로** 남긴다 — 그룹별 기울기 분해 진단에 쓴다
+        # (detach 하면 분해가 불가능하다). 학습 경로는 안 바뀐다.
+        self.last = {"l_the": l_the, "coef_b": b,
+                     "r": r.detach(), "z0": z0.detach(), "z0_raw": z0_raw.detach(), "lam": lam.detach(),
                      "u": u.detach(), "sign": sign, "cond_t": cond_t.detach(), "cond_r": cond_r,
                      "x0": x0, "dmask": dmask, "n_eff": n_eff, "k": probe_k}
 
@@ -308,7 +311,13 @@ class APOLoss:
             has_np = np.zeros(len(sign_np), dtype=bool) if has is None else np.asarray(has)
             dem = (np.asarray(self.chunk_is_demo)[idx] if self.chunk_is_demo is not None
                    else np.ones(len(sign_np), dtype=bool))
-            groups = {"intv": has_np & (sign_np > 0), "U": has_np & (sign_np < 0),
+            # ⚠ 그룹은 **승격 전 S** 로 가른다. preference() 가 S=0 을 +1 로 올리므로
+            #   (sign>0) 로 나누면 "개입에서 먼 정책 구간" 이 개입 그룹에 섞인다
+            #   [2026-09-20: 고친 직후 intv 16 -> 29 로 보여 잡았다].
+            S_np = np.asarray(self.chunk_S[idx], dtype=np.float64)
+            _t = 1e-6
+            groups = {"intv": has_np & (S_np > _t), "U": has_np & (S_np < -_t),
+                      "policy": has_np & (np.abs(S_np) <= _t),   # 개입에서 먼 정책 구간
                       "demo": (~has_np) & dem, "rollout": (~has_np) & (~dem)}
             for g, msk in groups.items():
                 if not msk.any():

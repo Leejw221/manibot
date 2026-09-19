@@ -116,21 +116,37 @@ def preference(S, has_intervention=None, tol: float = PREF_TOL,
     sign: +1 desirable · -1 undesirable · 0 판정 보류(가중 0)
     weight: |S|.
 
-    **S=0 에는 성격이 다른 둘이 섞여 있다** (실측 11,273 = 11,234 + 39):
+    **S=0 에는 성격이 다른 셋이 섞여 있다**:
       · 에피소드에 개입이 아예 없다 — 사람이 지켜보고도 손댈 필요가 없었다는 **정보**다.
         APO 원문의 expert(c_t=1) 에 해당하고 desirable 로 쓴다 [원문 직접 2026-09-12].
+      · 개입이 있던 에피소드지만 **그 청크는 개입 경계에서 멀다** — 감쇠로 S 가 0 이 됐다.
+        APO 원문의 `is_human == 2` 가 정확히 이것이고 **correct** 로 쓴다
+        [코드 원문 직접 2026-09-20, dataset/balance_apo_dataset.py].
       · 청크가 개입 경계를 정확히 걸쳐 양·음이 상쇄됐다 — 이건 정말로 판정할 수 없다.
 
-    has_intervention 을 주면 둘을 갈라 앞을 +1 로 읽는다. |S|=0 이라 가중이 0 이 되므로
-    expert_mag 를 대신 쓴다. 안 주면 예전대로 둘 다 보류 — 그렇게 두면 배치의 절반이
-    lam=0 이 되어 붙잡는 힘이 없어지고, 학습 신호를 안 받은 시연 데이터가 3.87배
-    나빠졌다 [측정 2026-09-12].
+    **앞의 둘을 함께 +1 로 읽는다.** 전에는 첫째만 살리고(`~has_intervention`) 둘째를
+    버렸는데, 그러면 개입이 한 번이라도 있는 에피소드의 정책 행동이 통째로 빠진다.
+    성공률 22.5% base 로는 거의 모든 배포 에피소드에 개입이 들어가므로, 실측에서
+    배치 64 개 중 정책 행동이 **1.3 개**뿐이었다 — "계속 이렇게 해라" 를 가르칠 표본이
+    없어 기울기가 전부 "다르게 해라"(교정 69% + 억제 16.5%) 쪽이었다 [측정 2026-09-20].
+    APO 원문은 `is_first_human` 을 is_human==2 에서 리셋해 **개입마다 직전 K 프레임만**
+    incorrect 로 옮기고 나머지 정책 구간은 correct 로 남긴다 — 프레임 단위 판정이다.
+
+    셋째(경계 걸침)는 우리 데이터에서 0 건이었다 — `has & |S|<tol` 852 개가 전부
+    action_mode==0(정책) 프레임이고 개입 프레임은 섞이지 않았다 [측정 2026-09-20].
+    섞이는 데이터가 생기면 action_mode 로 갈라야 한다.
+
+    |S|=0 이라 가중이 0 이 되므로 expert_mag 를 대신 쓴다. has_intervention 을 안 주면
+    예전대로 전부 보류 — 그렇게 두면 배치의 절반이 lam=0 이 되어 붙잡는 힘이 없어지고,
+    학습 신호를 안 받은 시연 데이터가 3.87배 나빠졌다 [측정 2026-09-12].
     """
     S = np.asarray(S, dtype=np.float64)
     sign = np.where(np.abs(S) < tol, 0, np.sign(S)).astype(np.int64)
     mag = np.abs(S)
     if has_intervention is not None:
-        expert = (sign == 0) & ~np.asarray(has_intervention, dtype=bool)
+        # 개입 유무와 무관하게 **S=0 이면 correct** (APO 의 is_human==2).
+        # has_intervention 은 "이 인자를 줬는가" 를 스위치로만 쓴다 — 하위호환 유지.
+        expert = sign == 0
         sign = np.where(expert, 1, sign)
         mag = np.where(expert, expert_mag, mag)
     return sign, mag
