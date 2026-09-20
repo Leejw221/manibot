@@ -39,7 +39,23 @@ class APOLoss:
                  mask_gripper_u=True, gripper_dim=-1, undesirable_weight=1.0,
                  z0_min=None, t_mode="uniform", beta_u_sigmoid=None,
                  reward_mode="mse", n_ode=20, n_hutch=1, chunk_is_demo=None,
-                 logratio_scale=1.0):
+                 logratio_scale=1.0, t_is=None, p_data_d=None, p_data_u=None,
+                 u_grad_cap=False):
+        # U 기울기 상한 — 근거는 __call__ 의 해당 블록 주석.
+        self.u_grad_cap = bool(u_grad_cap)
+        # t_is: reward 추첨용 제안분포 p(t). None 이면 균등(= 지금까지의 동작).
+        #   iDDPM §3.3 [원문 직접]: L = E_{t~p}[L_t / p_t],  p_t ∝ sqrt(E[L_t²]).
+        #   원칙은 "**합산하는 항의 크기**에 비례" 다. iDDPM 이 합산하는 항은 loss 지만
+        #   우리가 합산하는 항은 **차** d = s_ref - s_the 다. 펼치면
+        #       d = (e_the - e_ref)·(2eps - e_ref - e_the)   ->   |d| ~ |Δe| x ||eps - e_ref||
+        #   라 오차 척도를 **한 제곱만** 물려받는다. 그래서 p ∝ sqrt(s_ref).
+        #   s_ref 자체(제곱)에 비례시키면 저-t 로 과하게 몰려 이득이 사라진다
+        #   [측정 2026-09-20: 신호/잡음 균등 1.44 · sqrt 3.07 · 제곱 1.44].
+        #   ⚠ IS 는 **어떤 p 를 써도 무편향**이다 — 표가 부정확해도 편향이 아니라 분산만 는다.
+        self.t_is = t_is
+        # 자연 비율 z0 용 (z0_mode="natural"). balanced 배치가 U 를 12배 과대표집한다
+        # (데이터 2.06% vs 배치 25%) — 실측에서 z0 가 -257 까지 내려갔다 [2026-09-20].
+        self.p_data_d, self.p_data_u = p_data_d, p_data_u
         # reward_mode: "mse"(기존) = T*(MSE_ref - MSE_theta) · "logratio" = log pi_theta - log pi_ref
         #   mse 는 MSE_theta >= 0 이라 위로 유계고(r <= T*MSE_ref) 그 천장이 그룹마다 74배 갈린다
         #   — 시연 0.64 / 교정 47.6. 그래서 "기준 모델이 이미 잘하는 샘플"은 아무리 잘해도 reward
@@ -172,43 +188,59 @@ class APOLoss:
         if self.t_mode == "lam_is" and self._is is None:
             self._is = _lam_is_tables(m.noise_scheduler, x0.device)
 
-        se_diff, l1_acc, se_the = 0.0, 0.0, 0.0
+        sq = lambda e, ep: (((ep - e) ** 2) * dmask).sum(dim=(1, 2)) / n_eff
+
+        # ④-1 **reward 추첨** — 기울기는 여기서 안 흐른다. r 은 계수만 정한다.
+        #     t_is 가 있으면 그 분포에서 뽑고 1/p 로 보정한다. 균등은 p=1/T 인 특수 경우라
+        #     보정이 T 가 되어 기존 `T * mean_k d` 와 **정확히 같은 식**이 된다.
+        se_diff, se_mis = 0.0, 0.0
         probe_k = []  # 진단용: k 번째 추첨의 (t, eps, 청크별 ref 오차). 학습 경로에는 안 쓰인다
+        with torch.no_grad():
+            for _ in range(self.n_t):
+                if self.t_mode == "lam_is":
+                    lo, p_t, isw_tab = self._is
+                    t = torch.multinomial(p_t.expand(B, -1), 1).squeeze(1) + lo
+                    isw = isw_tab[t] * T
+                elif self.t_is is not None:
+                    p = self.t_is.to(x0.device)
+                    t = torch.multinomial(p.expand(B, -1), 1).squeeze(1)
+                    isw = 1.0 / p[t]
+                else:
+                    t = torch.randint(0, T, (B,), device=x0.device, dtype=torch.long)
+                    isw = torch.full((B,), float(T), device=x0.device, dtype=x0.dtype)
+                eps = torch.randn_like(x0)
+                e_the, _, _ = unet_out(m, cond_t, x0, t, eps)
+                e_ref, _, _ = unet_out(self.ref.diffusion, cond_r, x0, t, eps)
+                s_ref = sq(e_ref, eps)
+                se_diff = se_diff + isw.to(x0.dtype) * (s_ref - sq(e_the, eps))
+                probe_k.append((t, eps, s_ref))
+                if self.z0_mode == "mismatch":
+                    # KTO 원문의 엇갈린 짝. **r 과 같은 t·eps·보정**을 쓴다 — 2026-09-12 의
+                    # "26->462 폭주" 는 방법이 아니라 구현 탓이었다: 그때 z0 는 루프 **밖**의
+                    # t·eps 를 써 1회 추첨이었고 r 은 8회였다(MC 분산 8배). 척도도 달랐다
+                    # (dmask·n_eff 없이 .mean, 그 위에 T 곱). 여기서는 셋 다 r 과 같게 맞춘다.
+                    mis_the, _, _ = unet_out(m, cond_t.roll(1, 0), x0, t, eps)
+                    mis_ref, _, _ = unet_out(self.ref.diffusion, cond_r.roll(1, 0), x0, t, eps)
+                    se_mis = se_mis + isw.to(x0.dtype) * (sq(mis_ref, eps) - sq(mis_the, eps))
+
+        # ④-2 **기울기 추첨 — 항상 균등**. IS 를 여기 걸면 기울기 질량이 저-t 로 옮겨가는데,
+        #     EXP-11 실측에서 그러면 eps 손실은 25~33% 좋아지지만 **x0(행동) 공간으로 안 간다**
+        #     (저-t 는 sqrt((1-abar_t)/abar_t) 가 가장 작아 행동 오차로 환산하면 제일 안 중요하다).
+        #     그래서 "r 을 어떻게 추정하나" 와 "기울기가 어느 t 에서 오나" 를 **분리**한다.
+        #     같은 이유로 adaptive weight 의 l1 도 이 균등 경로에서 뽑는다.
+        se_the, l1_acc = 0.0, 0.0
         for _ in range(self.n_t):
-            if self.t_mode == "lam_is":
-                lo, p_t, isw = self._is
-                t = torch.multinomial(p_t.expand(B, -1), 1).squeeze(1) + lo
-            else:
-                t = torch.randint(0, T, (B,), device=x0.device, dtype=torch.long)
+            t = torch.randint(0, T, (B,), device=x0.device, dtype=torch.long)
             eps = torch.randn_like(x0)
             e_the, _, _ = unet_out(m, cond_t, x0, t, eps)
-            with torch.no_grad():
-                e_ref, _, _ = unet_out(self.ref.diffusion, cond_r, x0, t, eps)
-            sq = lambda e: (((eps - e) ** 2) * dmask).sum(dim=(1, 2)) / n_eff
-            s_ref = sq(e_ref)
-            s_the = sq(e_the)
-            d_sq = s_ref - s_the
-            # logratio 모드의 **기울기는 여기서만** 온다 — 계수는 detach 된 상수이므로
-            # theta 가 들어 있는 항이 이 디노이징 손실 하나뿐이다.
-            se_the = se_the + s_the
-            probe_k.append((t, eps, s_ref))
-            se_diff = se_diff + (self._is[2][t] * d_sq if self.t_mode == "lam_is" else d_sq)
+            se_the = se_the + sq(e_the, eps)
             # 가중치용 오차에는 마스크를 안 건다 — APO 의 adaptive weight 는 7차원 전부의 L1 이다
             # (ddp_robotic_trainer.py L294, action_space=7) [코드 원문 직접 2026-09-14].
-            # adaptive weight 는 **기존 균등 추출 경로를 유지**한다 — t 를 공유하면 reward 뿐 아니라
-            # w_i·lambda_{D/U} 까지 같이 바뀌어 "reward 만의 효과" 비교가 성립하지 않는다.
-            if self.t_mode == "lam_is":
-                with torch.no_grad():
-                    tw = torch.randint(0, T, (B,), device=x0.device, dtype=torch.long)
-                    ew = torch.randn_like(x0)
-                    e_w, _, _ = unet_out(m, cond_t, x0, tw, ew)
-                    l1_acc = l1_acc + (ew - e_w).abs().mean(dim=(1, 2)) / self.m_t.to(x0.device)[tw]
-            else:
-                l1_acc = l1_acc + (eps - e_the).abs().mean(dim=(1, 2)).detach() / self.m_t.to(x0.device)[t]
+            l1_acc = l1_acc + (eps - e_the).abs().mean(dim=(1, 2)).detach() / self.m_t.to(x0.device)[t]
 
         # ③ beta 는 sigma **밖에** 둔다. r 안에 넣으면 z0 클램프·grad_clip 같은 상수가
         #    조용히 beta 에 딸려 움직인다 (실제로 beta 1->10 에서 클램프가 10배 조여졌다).
-        r_mse = T * se_diff / self.n_t                  # ELBO margin (beta 없음)
+        r_mse = se_diff / self.n_t                      # sum_t d(t) 의 무편향 추정
         l_the = se_the / self.n_t                       # 샘플별 디노이징 손실 — **기울기가 산다**
         l_tilde = l1_acc / self.n_t
         r = r_mse
@@ -242,6 +274,18 @@ class APOLoss:
         elif self.z0_mode == "batch_mean":
             z0_raw = r.mean().detach()
             z0 = z0_raw
+        elif self.z0_mode == "natural":
+            # z0 는 "데이터 분포에 대한 기댓값" 인데 balanced 배치가 U 를 12.1배 과대표집한다
+            # (데이터 2.06% vs 배치 25%). 그래서 배치 평균 z0 가 U 에 끌려 -257 까지 내려가고,
+            # r/demo = -4.2 인 D 의 마진이 +271 이 되어 **D 가 먼저 꺼진다** [측정 2026-09-20].
+            # 샘플링·손실은 그대로 두고 **평균 내는 방식만** 자연 비율로 되돌린다.
+            #   w = 데이터 비율 / 배치 비율  (역수로 하면 U 가 더 무거워져 방향이 뒤집힌다)
+            p_b_d = (sign > 0).to(r.dtype).mean().clamp_min(1e-8)
+            p_b_u = (sign < 0).to(r.dtype).mean().clamp_min(1e-8)
+            w = torch.where(sign > 0, self.p_data_d / p_b_d,
+                            torch.where(sign < 0, self.p_data_u / p_b_u, torch.zeros_like(r)))
+            z0_raw = ((w * r).sum() / w.sum().clamp_min(1e-12)).detach()
+            z0 = z0_raw
         elif self.z0_mode == "desirable_mean":
             # 배치 평균은 U 에 납치된다 — 개입직전의 r 이 -60 까지 내려가 z0 를 -11 로
             # 끌어내리고, 그러면 desirable 이 ref 보다 나빠도(r<0) "이겼다"로 판정된다.
@@ -251,12 +295,17 @@ class APOLoss:
             z0_raw = (r[d].mean() if d.any() else r.mean()).detach()
             z0 = z0_raw
         else:
-            mis_the, _, _ = unet_out(m, cond_t.roll(1, 0), x0, t, eps)
-            with torch.no_grad():
-                mis_ref, _, _ = unet_out(self.ref.diffusion, cond_r.roll(1, 0), x0, t, eps)
-            z0_raw = (T * (((eps - mis_ref) ** 2).mean(dim=(1, 2))
-                           - ((eps - mis_the) ** 2).mean(dim=(1, 2)))).mean().detach()
-            z0 = z0_raw.clamp_min(0.0).clamp(self.z0_lo, self.z0_hi)
+            # mismatch — 엇갈린 짝. **손실이 밀고 있지 않은 샘플**로 기준점을 잰다는 게 요점이다.
+            # batch_mean·natural 은 둘 다 r 자체의 평균이라, 손실이 U 를 밀면 z0 가 따라 내려가는
+            # 되먹임이 남는다 (자연비율로도 U 의 |r| 이 demo 의 250배라 2.16%만 실려도 z0 를 끈다
+            # — 실측 D팔 z0 가 -32 까지 단조 하락 [2026-09-20]).
+            # 엇갈린 짝엔 선호 라벨이 붙지 않으므로 그 되먹임이 구조적으로 끊긴다.
+            # ⚠ 클램프를 안 쓴다. KTO 는 max(0,·) 를 쓰지만 그건 z0 를 KL 로 읽기 때문이고,
+            #   엇갈린 짝 추정량은 y'~데이터라 **진짜 KL 이 아니고 음수가 자연스럽다**
+            #   (KTO 가 max(0,·) 를 붙인 것 자체가 그 증거다). 사용자 판단:
+            #   "초반에 ref=theta니까 0이겠네. 그러면 0에서 양수하고 음수를 왔다갔다해야" [2026-09-20].
+            z0_raw = (se_mis / self.n_t).mean().detach()
+            z0 = z0_raw
 
         if self.z0_min is not None:
             z0 = z0.clamp_min(self.z0_min)
@@ -266,18 +315,40 @@ class APOLoss:
         b = self.beta if self.beta_u_sigmoid is None else torch.where(
             sign > 0, self.beta, self.beta_u_sigmoid).to(r.dtype)
         u = torch.sigmoid(b * sign.to(r.dtype) * (r - z0))
-        if self.reward_mode == "logratio":
-            # KTO 손실의 **1차 선형화**. 원래 기울기는
-            #     dL/dtheta = -( lam*b*sign*sigma'(x) * dr/dtheta ).mean()
-            # 인데 대괄호 안은 theta 에 대한 1차 항이 아니라 고정 시점에서 상수로 둘 수 있고,
-            # dr/dtheta = d(log pi_theta)/dtheta 이며 **로그확률을 올리는 표준 기울기가
-            # 디노이징 손실을 내리는 기울기**다. 그래서 아래 식은 같은 기울기를 준다.
-            #   desirable(sign=+1): 계수>0 x l_the -> l_the 를 줄인다(배운다)
-            #   undesirable(sign=-1): 계수<0 x l_the -> l_the 를 키운다(밀어낸다)
-            coef = (lam * b * u * (1.0 - u)).detach()
-            loss = (coef * sign.to(r.dtype) * l_the).mean() * self.logratio_scale
-        else:
-            loss = -(lam * u).mean()
+        # KTO 손실을 **계수 x 디노이징 손실** 로 쓴다. 원래 기울기는
+        #     dL/dtheta = -( lam*b*sign*sigma'(x) * dr/dtheta ).mean()
+        # 이고 대괄호 안은 고정 시점에서 상수로 둘 수 있다.
+        #   mse      : dr/dtheta = -T * d(l_the)/dtheta  ->  scale = T. **유도된 값**이다.
+        #              (기존 `-(lam*u).mean()` 과 같은 기울기를 준다 — 근사가 아니라 항등)
+        #   logratio : dr/dtheta = d(log pi_theta)/dtheta 이고 **로그확률을 올리는 표준 기울기가
+        #              디노이징 손실을 내리는 기울기**다 [Diffusion-DPO Eq.14].
+        #   desirable(sign=+1): 계수>0 x l_the -> l_the 를 줄인다(배운다)
+        #   undesirable(sign=-1): 계수<0 x l_the -> l_the 를 키운다(밀어낸다)
+        # 이 형태로 쓰는 이유는 **l_the 의 t 를 r 의 t 와 분리**하기 위해서다 (④-2 참조).
+        coef = (lam * b * u * (1.0 - u)).detach()
+        # ── U 기울기 상한 ────────────────────────────────────────────────
+        # **APO 원문이 갖고 있는데 우리 이식본이 잃어버린 성질을 되살린다.**
+        # 이산 토큰: d(log pi)/d(logits) = e_y - pi  ->  ‖∇‖ <= sqrt(2). 아무리 틀려도 안 커진다.
+        # 연속(우리): d(log pi)/d(eps_theta) = 2(eps - eps_theta)  ->  **오차에 비례해 커진다.**
+        # 실측 [2026-09-21]: U 의 오차가 ref 의 155배까지 가고 eps 공간 이동량이 intv 의 350배.
+        #   그 결과 demo 가 step 100 에 이미 7.4배 나빠졌다 — 기울기가 sqrt(l_the) 에 비례해
+        #   **제일 잘 맞는 샘플이 제일 약한 방어력**을 갖기 때문(demo 0.042 vs U 6.9, 164배).
+        # 규칙: "밀기가 지키기를 못 넘는다" — undesirable 의 기울기 크기가 desirable 쪽
+        #   **중앙값**을 넘지 않게 계수를 줄인다. 임의 상수가 없고 배치마다 스스로 맞춘다.
+        #   (demo 하나만 기준으로 잡는 변형도 있으나, 그러려면 l_ref/demo 를 라운드마다
+        #    다시 재서 넘겨야 한다 — 여기서는 배치 안에서 닫히는 쪽을 골랐다.)
+        u_cap_med = float("nan")
+        if self.u_grad_cap:
+            g = coef.abs() * l_the.detach().clamp_min(0).sqrt()   # 기울기 크기 대용
+            d_sel, u_sel = sign > 0, sign < 0
+            if d_sel.any():
+                g_d = g[d_sel].median()
+                cap = (g_d / g.clamp_min(1e-12)).clamp(max=1.0)
+                coef = torch.where(u_sel, coef * cap, coef)
+                if u_sel.any():
+                    u_cap_med = cap[u_sel].median().item()   # 1 이면 상한이 안 걸린 것
+        scale = self.logratio_scale if self.reward_mode == "logratio" else float(T)
+        loss = (coef * sign.to(r.dtype) * l_the).mean() * scale
         # 진단용 샘플별 값 — 배치 평균 로그만으로는 그룹별 포화 방향을 못 가른다 (2026-09-17)
         # l_the 는 **기울기가 살아 있는 채로** 남긴다 — 그룹별 기울기 분해 진단에 쓴다
         # (detach 하면 분해가 불가능하다). 학습 경로는 안 바뀐다.
@@ -297,7 +368,8 @@ class APOLoss:
         sat = (((u < 0.05) | (u > 0.95)) & keep).sum() / n_keep
         out = {"r_mean": r.mean().item(), "r_std": r.std().item(), "z0": z0.item(),
                "z0_raw": z0_raw.item(), "u_mean": u.mean().item(), "sat_rate": sat.item(),
-               "label_frac": keep.float().mean().item(), "bal": bal, **wdiag}
+               "label_frac": keep.float().mean().item(), "bal": bal,
+               "u_cap": u_cap_med, **wdiag}
         for nm, sel in (("r_d", sign > 0), ("r_u", sign < 0)):
             out[nm] = r[sel].mean().item() if sel.any() else float("nan")
 

@@ -72,6 +72,32 @@ def _build_finetune_loss(cfg, network):
     if ft.loss == "bc":
         return None
 
+    # wbc = 가중 BC. SIRIUS 의 구조(가중 모방)에 APO 의 적응 가중을 넣고 undesirable 은
+    # **밀지 않고 가중만 낮춘다**. sign 을 곱하지 않으므로 U 의 발산 항이 없다.
+    # ref 정책도 z0 도 필요 없다 — l~ 가 theta 자기 오차라서.
+    if ft.loss == "wbc":
+        import numpy as np
+        import torch as _torch
+
+        from manibot.losses.weighted_bc import WeightedBCLoss
+        lab = np.load(ft.labels)
+        a = ft.apo
+        n_demo_log = ft.get("n_demo_episodes", None) or a.get("n_demo_log", 0)
+        chunk_is_demo = None
+        if n_demo_log:
+            import zarr
+            ep_all = np.asarray(zarr.open(str(cfg.task.dataset_root), "r")["data"]["episode_index"]).ravel()
+            chunk_is_demo = ep_all[:len(lab["S"])] < int(n_demo_log)
+        logger.info(f"가중 BC: beta_d={a.beta_d} · lam_u_fixed={a.get('lam_u_fixed', 0.002)}")
+        return WeightedBCLoss(
+            m_t=_torch.from_numpy(np.load(ft.t_stats)).float(),
+            chunk_S=lab["S"],
+            chunk_has=lab["has_intv"] if a.expert_desirable else None,
+            beta_d=a.beta_d, n_t=a.n_t,
+            lam_u_fixed=a.get("lam_u_fixed", 0.002),
+            expert_mag=a.expert_mag, use_mag=a.get("use_mag", True),
+            chunk_is_demo=chunk_is_demo)
+
     import numpy as np
 
     from manibot.losses.apo_loss import APOLoss
@@ -79,7 +105,7 @@ def _build_finetune_loss(cfg, network):
     from manibot.utils.dataset_utils import create_dataset_stats
     from manibot.utils.task_utils import derive_task_meta
 
-    assert ft.loss == "apo", f"finetune.loss={ft.loss!r} 미지원 (apo | bc)"
+    assert ft.loss == "apo", f"finetune.loss={ft.loss!r} 미지원 (apo | bc | wbc)"
     for k in ("ref_checkpoint", "labels", "t_stats"):
         assert ft.get(k), f"finetune.{k} 를 지정해야 한다"
 
@@ -105,6 +131,27 @@ def _build_finetune_loss(cfg, network):
         import zarr
         ep_all = np.asarray(zarr.open(str(cfg.task.dataset_root), "r")["data"]["episode_index"]).ravel()
         chunk_is_demo = ep_all[:len(lab["S"])] < int(n_demo_log)
+
+    # reward 추첨용 제안분포 p(t). 없으면 균등 — 지금까지의 동작 그대로.
+    t_is = None
+    if a.get("t_is", None):
+        p = np.load(a.t_is)
+        assert p.ndim == 1 and abs(p.sum() - 1) < 1e-4 and (p > 0).all(), \
+            f"t_is 는 합이 1 이고 전부 양수인 1차원 분포여야 한다: {a.t_is}"
+        t_is = torch.from_numpy(p).float()
+        logger.info(f"reward t 추첨 = importance ({a.t_is}, max/min {p.max()/p.min():.1f}배)")
+
+    # z0_mode="natural" 용 — 학습 데이터에서의 자연 클래스 비율. 라운드마다 자동 갱신된다.
+    # 손실이 쓰는 것과 **같은 preference()** 로 센다 (기준이 둘이면 배치 구성이 재현되지 않는다).
+    p_data_d = p_data_u = None
+    if a.z0_mode == "natural":
+        from manibot.utils.intervention_labels import preference
+        hz = lab["chunk_has_zero"] if "chunk_has_zero" in lab else None
+        sign_all, _ = preference(lab["S"], lab["has_intv"], chunk_has_zero=hz)
+        n_d, n_u = int((sign_all > 0).sum()), int((sign_all < 0).sum())
+        p_data_d, p_data_u = n_d / (n_d + n_u), n_u / (n_d + n_u)
+        logger.info(f"z0=natural  데이터 비율 D {p_data_d:.4f} / U {p_data_u:.4f}  (D {n_d} · U {n_u})")
+
     return APOLoss(
         ref=ref,
         m_t=torch.from_numpy(np.load(ft.t_stats)).float(),
@@ -123,7 +170,9 @@ def _build_finetune_loss(cfg, network):
         reward_mode=a.get("reward_mode", "mse"),
         n_ode=a.get("n_ode", 20), n_hutch=a.get("n_hutch", 1),
         chunk_is_demo=chunk_is_demo,
-        logratio_scale=a.get("logratio_scale", 1.0))
+        logratio_scale=a.get("logratio_scale", 1.0),
+        t_is=t_is, p_data_d=p_data_d, p_data_u=p_data_u,
+        u_grad_cap=a.get("u_grad_cap", False))
 
 
 def _build_ema(policy, cfg):

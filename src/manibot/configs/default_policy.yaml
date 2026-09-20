@@ -117,7 +117,7 @@ wandb:
 # enabled=false 면 기존 학습 경로가 **한 글자도 안 바뀐다**.
 finetune:
   enabled: false
-  loss: apo                 # apo | bc(APO 를 뺀 대조군) | (나중에 sirius)
+  loss: apo                 # apo | bc(가중 없는 대조군) | wbc(가중 BC) | (나중에 sirius)
   ref_checkpoint: null      # pi_ref.  반드시 지정
   theta_init: null          # pi_theta 시작점. null 이면 ref_checkpoint (APO 원문 기본)
   labels: null              # precompute_apo_labels 의 npz (S, has_intv)
@@ -138,7 +138,9 @@ finetune:
     z0_clamp: [-5.0, 5.0]
     bc_weight: 0.0          # A1(ref_mode=epoch_frozen)이면 1 이어야 학습이 된다
     ref_mode: live          # live(A2, 우리 방식) | epoch_frozen(A1, 교수님 방식)
-    # z0_mode: batch_mean | desirable_mean | none | mismatch(APO 원문, 폭주해 폐기)
+    # z0_mode: batch_mean | natural | desirable_mean | none | mismatch(APO 원문, 폭주해 폐기)
+    #   natural = 배치 평균을 **자연 클래스 비율**로 되돌린 가중평균. balanced 배치가
+    #   U 를 12.1배 과대표집해 z0 가 -257 까지 내려가 D 가 먼저 꺼졌다 [측정 2026-09-20].
     use_mag: true           # false 면 mag=|S| 를 빼고 부호만 쓴다 (APO 원문에는 mag 이 없다)
     mask_gripper_u: true    # U 의 reward 에서 gripper 차원 제외. **우리 설계 판단**
                             # (APO 공개 코드엔 없다 — rejected 의 [:, :-1] 은 stop 토큰)
@@ -170,6 +172,21 @@ finetune:
     #   probability flow ODE 로 정확히 구하며 그 천장이 없다
     #   [Song et al., Score-Based Generative Modeling through SDEs, Eq.13/39/40 · 측정 2026-09-19].
     reward_mode: mse
+    # t_is: reward 추첨용 제안분포 p(t) 의 npy. null 이면 균등(지금까지의 동작).
+    #   iDDPM §3.3 의 importance sampling. **합산하는 항이 차 d 이므로 p ∝ sqrt(s_ref)** 다
+    #   — 제곱(s_ref 자체)에 비례시키면 저-t 에 과하게 몰려 이득이 사라진다
+    #   [측정 2026-09-20: 신호/잡음 균등 1.44 · sqrt 3.07 · 제곱 1.44].
+    #   기울기의 t 는 이것과 무관하게 **항상 균등**이다 (EXP-11: 저-t 이득이 x0 로 안 간다).
+    t_is: null
+    # wbc 전용 — undesirable 의 고정 가중. lam_D 평균 0.35 에 대해 U 가 ref 의 48배까지
+    #   나빠진 상태에서 U 의 기울기 크기를 **base 수준 demo 의 방어력**과 같게 하는 값이
+    #   0.35*sqrt(0.0020)/sqrt(48) = 0.0023 이다 [측정 2026-09-21].
+    #   ⚠ 우리 데이터에서 잰 값이라 라운드가 바뀌면 다시 재야 한다.
+    lam_u_fixed: 0.002
+    # u_grad_cap: undesirable 의 기울기 크기가 desirable 쪽 중앙값을 못 넘게 한다.
+    #   APO 원문(이산 토큰)은 ‖∇‖ <= sqrt(2) 라는 암묵적 상한이 있는데 연속 이식본엔 없다.
+    #   실측 2026-09-21: U 오차 155배 · eps 이동량 350배 -> demo 가 step 100 에 7.4배 악화.
+    u_grad_cap: false
     n_ode: 20               # RK4 고정 스텝. 20 vs 80 차이가 그룹 중앙값 기준 0~7%
     n_hutch: 1              # Skilling-Hutchinson 표본. 1 vs 4 가 계수에 5% 미만 영향
     logratio_scale: 1.0     # step 0 grad_norm 을 mse 설정과 맞춰 정한다 (임의 상수 아님)
