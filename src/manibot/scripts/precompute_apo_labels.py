@@ -52,14 +52,21 @@ def main(cfg):
     N = len(ds)
     S = np.zeros(N, dtype=np.float64)
     has = np.zeros(N, dtype=bool)
+    # hz[i] = 이 청크가 c==0 프레임을 품었나 = **k_pre 절단선을 걸쳤나**.
+    # c==0 은 "이 프레임은 책임 범위 밖" 이라고 이미 판정한 것이다. 그걸 품은 청크를
+    # 통째로 undesirable 로 밀면 책임 밖 구간(정상 이동)까지 같이 밀린다
+    # [사용자 지적 2026-09-20: "제대로 이동한 구간도 억제되니까"].
+    hz = np.zeros(N, dtype=bool)
     for i in range(N):
         e = int(ep_idx[i])
         qi, _ = ds._get_query_indices(i, e)
-        S[i] = c[np.asarray(qi[ACTION])].sum()
+        w = c[np.asarray(qi[ACTION])]
+        S[i] = w.sum()
+        hz[i] = bool((w == 0).any())
         has[i] = has_intv_ep[e]
 
-    sign, mag = preference(S)
-    np.savez(out, S=S, has_intv=has, gamma=gamma, k_pre=k_pre)
+    sign, mag = preference(S, has, chunk_has_zero=hz)
+    np.savez(out, S=S, has_intv=has, chunk_has_zero=hz, gamma=gamma, k_pre=k_pre)
     print(f"저장: {out}   샘플 {N}  (gamma={gamma}, k_pre={k_pre})")
     print(f"  개입 있는 에피소드의 청크 {has.sum()}  ·  없는 청크 {(~has).sum()}")
     print(f"  D {int((sign>0).sum())}  U {int((sign<0).sum())}  보류 {int((sign==0).sum())}")

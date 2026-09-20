@@ -22,7 +22,7 @@ from torch.utils.data import Sampler
 __all__ = ["BalancedBatchSampler", "split_pools"]
 
 
-def split_pools(sign, has_intervention, allowed=None, is_demo=None):
+def split_pools(sign, has_intervention, allowed=None, is_demo=None, drop=None):
     """(sign, has_intervention) -> (correct, intervention, incorrect) 인덱스 배열 셋.
 
     is_demo 를 주면 correct 를 **(시연, 정책 롤아웃)** 으로 쪼개 넷을 돌려준다.
@@ -60,6 +60,12 @@ def split_pools(sign, has_intervention, allowed=None, is_demo=None):
     ok = np.ones(len(sign), dtype=bool)
     if allowed is not None:
         ok[:] = False; ok[np.asarray(allowed)] = True
+    # ⚠ sign==0 에는 두 종류가 섞인다: APO 의 is_human==2(개입에서 먼 정책 행동 -> correct)
+    #   와 **판정 제외 대상**(k_pre 절단선을 걸친 U). 후자는 손실에서 lam=0 이라 어느 풀에
+    #   넣어도 죽은 슬롯이 된다 — 아예 뺀다.
+    #   [2026-09-20: 안 빼서 correct 32 슬롯 중 2.6 개가 lam=0 이었다]
+    if drop is not None:
+        ok = ok & ~np.asarray(drop, dtype=bool)
     inter = np.where(ok & has & (sign > 0))[0]
     incorr = np.where(ok & has & (sign < 0))[0]
     # correct = 개입 없는 에피소드(시연) + **개입 에피소드의 개입-먼 정책 구간**

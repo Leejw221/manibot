@@ -110,7 +110,7 @@ PREF_TOL = 1e-9
 
 
 def preference(S, has_intervention=None, tol: float = PREF_TOL,
-               expert_mag: float = 1.0):
+               expert_mag: float = 1.0, chunk_has_zero=None):
     """청크 점수 S -> (sign, weight).
 
     sign: +1 desirable · -1 undesirable · 0 판정 보류(가중 0)
@@ -143,10 +143,21 @@ def preference(S, has_intervention=None, tol: float = PREF_TOL,
     S = np.asarray(S, dtype=np.float64)
     sign = np.where(np.abs(S) < tol, 0, np.sign(S)).astype(np.int64)
     mag = np.abs(S)
+    # **k_pre 절단선을 걸친 청크는 undesirable 에서 뺀다.**
+    # c==0 은 "책임 범위 밖" 이라는 판정이다. 그걸 품은 청크는 책임 밖 구간과 안 구간이
+    # 섞여 있어, 통째로 밀면 정상 이동까지 밀린다. 실측에서 U 660 개 중 450 개(68%)가
+    # 이 경우였고 그중엔 **음수가 1 개뿐인 청크도 30 개** 있었다 [측정 2026-09-20].
+    # 크기 임계(S < -3.5 등) 대신 이 규칙을 쓰는 이유: 임계는 음수 **개수와 거리를 섞은**
+    # 값이라 같은 값이 위치에 따라 다른 개수에 대응한다(경계 인접 4개 -3.71 vs 먼 4개 -2.11).
+    # 이건 참/거짓이라 임의 상수가 없다.
+    drop = (np.asarray(chunk_has_zero, dtype=bool) & (sign < 0)
+            if chunk_has_zero is not None else np.zeros(len(S), dtype=bool))
     if has_intervention is not None:
         # 개입 유무와 무관하게 **S=0 이면 correct** (APO 의 is_human==2).
-        # has_intervention 은 "이 인자를 줬는가" 를 스위치로만 쓴다 — 하위호환 유지.
         expert = sign == 0
         sign = np.where(expert, 1, sign)
         mag = np.where(expert, expert_mag, mag)
+    # 승격 **뒤에** 적용한다 — 빠진 청크가 desirable 로 올라가면 안 된다. 보류(lam=0)로 남긴다.
+    sign = np.where(drop, 0, sign)
+    mag = np.where(drop, 0.0, mag)
     return sign, mag

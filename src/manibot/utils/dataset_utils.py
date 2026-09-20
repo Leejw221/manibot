@@ -183,7 +183,14 @@ def create_dataloader(dataset, cfg: DictConfig, is_training=True):
         from manibot.utils.intervention_labels import preference
 
         lab = np.load(ft.labels)
-        sign, _ = preference(lab["S"])
+        # ⚠ 손실과 **같은 규칙**을 써야 한다 — 풀 구성과 부호 판정이 갈리면 배치가
+        #   의도대로 안 만들어진다 (intervention_labels 모듈 주석의 선례: 목표 25% -> 실제 18.3%).
+        _hz = lab["chunk_has_zero"] if "chunk_has_zero" in lab else None
+        sign, _ = preference(lab["S"], chunk_has_zero=_hz)
+        # 제외 대상 = 0 을 품은 U. preference 가 sign=0 으로 만들어 버려 구분이 안 되므로
+        # 원래 부호로 다시 만든다.
+        _drop = (None if _hz is None
+                 else np.asarray(_hz, dtype=bool) & (np.sign(lab["S"]) < 0))
         allowed = list(sampler) if sampler is not None else None   # drop_n_last_frames 존중
         # n_demo_episodes 를 주면 correct 를 (시연, 정책 롤아웃) 으로 쪼갠다 — 풀이 넷이 되고
         # balanced 도 길이 4 여야 한다.  라운드가 쌓여도 시연 노출을 고정하기 위한 것이다.
@@ -193,7 +200,7 @@ def create_dataloader(dataset, cfg: DictConfig, is_training=True):
             import zarr
             ep = np.asarray(zarr.open(str(cfg.task.dataset_root), "r")["data"]["episode_index"]).ravel()
             is_demo = ep[:len(sign)] < int(n_demo)
-        pools = split_pools(sign, lab["has_intv"], allowed, is_demo)
+        pools = split_pools(sign, lab["has_intv"], allowed, is_demo, drop=_drop)
         names = ("시연", "롤아웃", "개입", "개입직전") if is_demo is not None else ("correct", "개입", "개입직전")
         bs = BalancedBatchSampler(pools, batch_size, tuple(ft.balanced))
         logger.info("APO balanced sampler: "
