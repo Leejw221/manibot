@@ -31,6 +31,10 @@ from .weighting import apo_weights
 
 __all__ = ["APOLoss"]
 
+# dsig(= sigma'(x)/0.25) 가 0.05 아래로 내려가는 x. 우리가 "그 그룹이 꺼졌다" 고
+# 부르는 기준과 같은 값이다 — 데이터가 아니라 규약이므로 라운드가 바뀌어도 그대로다.
+X_SAT = 4.36
+
 
 class APOLoss:
     def __init__(self, ref, m_t, chunk_S, chunk_has=None, beta=30.0, beta_d=8.0,
@@ -40,7 +44,9 @@ class APOLoss:
                  z0_min=None, t_mode="uniform", beta_u_sigmoid=None,
                  reward_mode="mse", n_ode=20, n_hutch=1, chunk_is_demo=None,
                  logratio_scale=1.0, t_is=None, p_data_d=None, p_data_u=None,
-                 u_grad_cap=False):
+                 u_grad_cap=False, u_budget_symmetric=False):
+        # U 의 변화량 예산을 D 와 대칭으로 — 근거는 __call__ ⑥ 주석.
+        self.u_budget_symmetric = bool(u_budget_symmetric)
         # U 기울기 상한 — 근거는 __call__ 의 해당 블록 주석.
         self.u_grad_cap = bool(u_grad_cap)
         # t_is: reward 추첨용 제안분포 p(t). None 이면 균등(= 지금까지의 동작).
@@ -193,7 +199,7 @@ class APOLoss:
         # ④-1 **reward 추첨** — 기울기는 여기서 안 흐른다. r 은 계수만 정한다.
         #     t_is 가 있으면 그 분포에서 뽑고 1/p 로 보정한다. 균등은 p=1/T 인 특수 경우라
         #     보정이 T 가 되어 기존 `T * mean_k d` 와 **정확히 같은 식**이 된다.
-        se_diff, se_mis = 0.0, 0.0
+        se_diff, se_mis, se_ref_acc = 0.0, 0.0, 0.0
         probe_k = []  # 진단용: k 번째 추첨의 (t, eps, 청크별 ref 오차). 학습 경로에는 안 쓰인다
         with torch.no_grad():
             for _ in range(self.n_t):
@@ -213,6 +219,8 @@ class APOLoss:
                 e_ref, _, _ = unet_out(self.ref.diffusion, cond_r, x0, t, eps)
                 s_ref = sq(e_ref, eps)
                 se_diff = se_diff + isw.to(x0.dtype) * (s_ref - sq(e_the, eps))
+                # r 과 **같은 추정기**로 T*s_ref 도 모은다 (대칭 예산용, ⑥ 참조).
+                se_ref_acc = se_ref_acc + isw.to(x0.dtype) * s_ref
                 probe_k.append((t, eps, s_ref))
                 if self.z0_mode == "mismatch":
                     # KTO 원문의 엇갈린 짝. **r 과 같은 t·eps·보정**을 쓴다 — 2026-09-12 의
@@ -241,6 +249,7 @@ class APOLoss:
         # ③ beta 는 sigma **밖에** 둔다. r 안에 넣으면 z0 클램프·grad_clip 같은 상수가
         #    조용히 beta 에 딸려 움직인다 (실제로 beta 1->10 에서 클램프가 10배 조여졌다).
         r_mse = se_diff / self.n_t                      # sum_t d(t) 의 무편향 추정
+        r_ref = se_ref_acc / self.n_t                   # = T*s_ref 의 추정 (r 과 같은 단위)
         l_the = se_the / self.n_t                       # 샘플별 디노이징 손실 — **기울기가 산다**
         l_tilde = l1_acc / self.n_t
         r = r_mse
@@ -312,8 +321,32 @@ class APOLoss:
         lam, wdiag = apo_weights(l_tilde, None, self.m_t, sign, mag, self.beta_d, self.beta_u)
         if self.undesirable_weight != 1.0:
             lam = torch.where(sign < 0, lam * self.undesirable_weight, lam)
-        b = self.beta if self.beta_u_sigmoid is None else torch.where(
-            sign > 0, self.beta, self.beta_u_sigmoid).to(r.dtype)
+        # ⑥ undesirable 쪽 beta — **대칭 예산**에서 유도한다.
+        #
+        # 왜 필요한가: r_D 는 위로 유계(s_the >= 0 이라 r_D <= T*s_ref)인데 r_U 는 아래로 무계다.
+        #   mse 로 옮기면서 생긴 **부호 비대칭**이고(KTO 의 로그비는 양쪽 다 무계라 대칭),
+        #   그래서 U 의 변화량이 D 의 350배까지 갔다 [측정 2026-09-21].
+        #
+        # 대칭 조건: "U 의 오차 증가폭이 D 가 낼 수 있는 최대 감소폭(= s_ref)을 못 넘는다"
+        #     -> r_U >= -T*s_ref = -r_ref
+        #   그 지점에서 시그모이드가 포화하게 beta_u 를 잡으면 (X_SAT = dsig<0.05 경계)
+        #     beta_u,i = X_SAT / r_ref_i
+        #   z0 ~ 0 일 때 x_i = X_SAT * |1 - s_the_i/s_ref_i| 가 되어, **포화가 정확히
+        #   "그 샘플의 오차가 두 배" 지점**이다 — 샘플의 원래 척도와 무관하다.
+        #   상수는 X_SAT 하나뿐이고 그건 데이터가 아니라 "언제를 꺼진 것으로 보나" 라는 규약이다.
+        #
+        # ⚠ z0 ~ 0 가정이 들어 있다. z0 가 0 에서 멀면 x 가 상대 배수의 함수가 아니게 된다
+        #   — 로그의 z0 와 x/U 로 확인할 것.
+        if self.u_budget_symmetric:
+            assert self.reward_mode == "mse", (
+                "대칭 예산은 r 과 r_ref 가 같은 단위여야 한다 — logratio 는 ODE 로그비라 다르다")
+            b_u = (X_SAT / r_ref.clamp_min(1e-6)).to(r.dtype)
+        elif self.beta_u_sigmoid is not None:
+            b_u = torch.full_like(r, float(self.beta_u_sigmoid))
+        else:
+            b_u = None
+        b = self.beta if b_u is None else torch.where(
+            sign > 0, torch.full_like(r, float(self.beta)), b_u)
         u = torch.sigmoid(b * sign.to(r.dtype) * (r - z0))
         # KTO 손실을 **계수 x 디노이징 손실** 로 쓴다. 원래 기울기는
         #     dL/dtheta = -( lam*b*sign*sigma'(x) * dr/dtheta ).mean()
@@ -370,6 +403,12 @@ class APOLoss:
                "z0_raw": z0_raw.item(), "u_mean": u.mean().item(), "sat_rate": sat.item(),
                "label_frac": keep.float().mean().item(), "bal": bal,
                "u_cap": u_cap_med, **wdiag}
+        if self.u_budget_symmetric:
+            _u = sign < 0
+            if _u.any():
+                # r/r_ref = 1 - s_the/s_ref.  -1 이면 오차가 딱 2배 = 예산 소진 지점.
+                out["b_u"] = b[_u].median().item()
+                out["u_spent"] = (-(r / r_ref.clamp_min(1e-6)))[_u].median().item()
         for nm, sel in (("r_d", sign > 0), ("r_u", sign < 0)):
             out[nm] = r[sel].mean().item() if sel.any() else float("nan")
 

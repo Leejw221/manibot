@@ -172,7 +172,8 @@ def _build_finetune_loss(cfg, network):
         chunk_is_demo=chunk_is_demo,
         logratio_scale=a.get("logratio_scale", 1.0),
         t_is=t_is, p_data_d=p_data_d, p_data_u=p_data_u,
-        u_grad_cap=a.get("u_grad_cap", False))
+        u_grad_cap=a.get("u_grad_cap", False),
+        u_budget_symmetric=a.get("u_budget_symmetric", False))
 
 
 def _build_ema(policy, cfg):

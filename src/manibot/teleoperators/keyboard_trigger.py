@@ -22,7 +22,11 @@
 import logging
 
 from lerobot.teleoperators.utils import TeleopEvents
-from lerobot.utils.keyboard_input import apply_recording_control, create_key_listener
+from lerobot.utils.keyboard_input import (
+    apply_recording_control,
+    create_key_listener,
+    pynput_can_capture,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -48,6 +52,8 @@ class KeyboardTrigger:
         # 반환 후보 표시 — 개입 중 "정책에 돌려줘 볼 만하다" 고 본 시점. 실제로 돌려주지는 않고
         # 수집기가 step 을 기록해 나중에 그 상태에서 정책을 돌려본다 [사용자 결정 2026-09-17]
         self._marks = 0
+        # 전역(pynput) 인가 TTY 폴백인가 — feed() 가 중복 처리를 피하는 데 쓴다.
+        self._global_listener = bool(pynput_can_capture())
         self._listener = create_key_listener(self._on_key, controls_help=HELP)
         if self._listener is None:
             logger.warning("키보드 입력을 못 잡는다 — 개입 없이 정책만 돌게 된다. %s", HELP)
@@ -80,6 +86,13 @@ class KeyboardTrigger:
         TTY 로 폴백한다 — 그러면 **터미널에 포커스가 있어야만** 키가 먹어서 영상을 보며
         누를 수가 없다. 영상 창이 직접 키를 받아 이리로 넘기면 그 제약이 사라진다.
         """
+        # ⚠ **전역 리스너가 있으면 창 입력을 버린다.** pynput 은 전역 훅이라 영상 창에
+        #   포커스가 있어도 키를 잡는다 — 그 상태에서 창 입력까지 넘기면 `_on_key` 가 두 번
+        #   불려 토글이 **켜졌다 바로 꺼진다**(2026-09-21 실측: "개입 시작" 직후 "개입 해제").
+        #   세션이 Wayland 면 pynput 이 못 잡아 TTY 로 폴백하므로 이 경로가 **유일한** 입력이다
+        #   — 그래서 끄지 않고 경로가 겹칠 때만 버린다.
+        if self._global_listener:
+            return
         if name:
             self._on_key(name)
 

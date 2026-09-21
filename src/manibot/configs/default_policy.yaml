@@ -187,6 +187,12 @@ finetune:
     #   APO 원문(이산 토큰)은 ‖∇‖ <= sqrt(2) 라는 암묵적 상한이 있는데 연속 이식본엔 없다.
     #   실측 2026-09-21: U 오차 155배 · eps 이동량 350배 -> demo 가 step 100 에 7.4배 악화.
     u_grad_cap: false
+    # u_budget_symmetric: undesirable 의 beta 를 **샘플별로** 대칭 예산에서 유도한다.
+    #   beta_u,i = 4.36 / (T*s_ref,i)  ->  z0~0 에서 x_i = 4.36*|1 - s_the_i/s_ref_i|
+    #   즉 포화가 정확히 '그 샘플의 오차가 두 배' 지점. 샘플 척도·라운드와 무관하다.
+    #   왜: r_D 는 위로 유계인데 r_U 는 아래로 무계라(mse 로 옮기며 생긴 부호 비대칭)
+    #       U 의 변화량이 D 의 350배까지 갔다 [측정 2026-09-21].
+    u_budget_symmetric: false
     n_ode: 20               # RK4 고정 스텝. 20 vs 80 차이가 그룹 중앙값 기준 0~7%
     n_hutch: 1              # Skilling-Hutchinson 표본. 1 vs 4 가 계수에 5% 미만 영향
     logratio_scale: 1.0     # step 0 grad_norm 을 mse 설정과 맞춰 정한다 (임의 상수 아님)
