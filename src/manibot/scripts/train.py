@@ -72,6 +72,24 @@ def _build_finetune_loss(cfg, network):
     if ft.loss == "bc":
         return None
 
+    # sirius = SIRIUS 원문 그대로. 클래스 단위 고정 가중 w=P*(c)/P(c) 를 곱한 BC.
+    # 배치는 자연 분포에서 뽑아야 하므로 **finetune.balanced=null 과 함께** 써야 한다.
+    if ft.loss == "sirius":
+        import numpy as np
+        import zarr
+
+        from manibot.losses.sirius import SiriusLoss
+        lab = np.load(ft.labels)
+        n_demo = int(ft.get("n_demo_episodes", None) or ft.apo.get("n_demo_log", 20))
+        ep = np.asarray(zarr.open(str(cfg.task.dataset_root), "r")["data"]["episode_index"]).ravel()
+        loss_fn = SiriusLoss(lab["S"], lab["has_intv"], ep[:len(lab["S"])] < n_demo,
+                             p_star_intv=float(ft.apo.get("p_star_intv", 0.5)),
+                             n_t=int(ft.apo.n_t))
+        logger.info("SIRIUS 가중  " + "  ".join(
+            f"{c}: n={loss_fn.n[c]} P={loss_fn.P[c]:.4f} P*={loss_fn.Ps[c]:.4f} w={loss_fn.w_cls[c]:.3f}"
+            for c in ("demo", "intv", "robot", "preintv")))
+        return loss_fn
+
     # wbc = 가중 BC. SIRIUS 의 구조(가중 모방)에 APO 의 적응 가중을 넣고 undesirable 은
     # **밀지 않고 가중만 낮춘다**. sign 을 곱하지 않으므로 U 의 발산 항이 없다.
     # ref 정책도 z0 도 필요 없다 — l~ 가 theta 자기 오차라서.
@@ -437,9 +455,14 @@ class PolicyTrainer:
                 self.config.train.log_freq > 0 and
                 self.step_counter % self.config.train.log_freq == 0
             )
+            # **마지막 스텝은 무조건 저장한다.** save_freq 의 배수가 아니면 최종 가중치가
+            # 통째로 사라진다 (2026-09-27: steps=76,500 · save_freq=10,000 으로 3.7시간
+            # 학습분의 마지막 체크포인트를 잃었다). 스텝 수를 배수에 맞추는 규약보다
+            # 여기서 막는 쪽이 안전하다 — 규약은 잊히고 코드는 안 잊힌다.
             is_save_step = (
                 self.config.train.save_freq > 0 and
-                self.step_counter % self.config.train.save_freq == 0
+                (self.step_counter % self.config.train.save_freq == 0
+                 or self.step_counter == self.config.train.steps)
             )
             is_val_offline_step = (
                 self.val_dataloader is not None and
@@ -647,10 +670,16 @@ def train(cfg: DictConfig):
         from manibot.utils.checkpoints import load_ema_weights
         # theta_init 를 주면 pi_theta 만 거기서 출발한다 — pi_ref 는 ref_checkpoint 그대로.
         # beta 를 바꿔 '이어서' 돌릴 때 쓴다 (기준점을 안 옮겨야 비교가 남는다).
-        _init = _ft.get("theta_init", None) or _ft.ref_checkpoint
-        load_model_weights(policy, _init, cfg.device)
-        _used = load_ema_weights(policy, _init, cfg.device)
-        logger.info(f"pi_theta 초기화 <- {_init} (EMA {'적용' if _used else '없음'})")
+        _init = _ft.get("theta_init", None) or _ft.get("ref_checkpoint", None)
+        if _init:
+            load_model_weights(policy, _init, cfg.device)
+            _used = load_ema_weights(policy, _init, cfg.device)
+            logger.info(f"pi_theta 초기화 <- {_init} (EMA {'적용' if _used else '없음'})")
+        else:
+            # theta_init·ref_checkpoint 를 둘 다 안 주면 **무작위 초기화**로 간다.
+            # 라운드 학습에서 theta_init 누적(이전 라운드 정책에서 출발)이라는 교란을
+            # 빼고 "데이터만 늘린 효과" 를 보려는 from-scratch 대조군용이다.
+            logger.info("pi_theta 초기화 <- 무작위 (from scratch)")
 
     runner = PolicyTrainer(
         cfg,

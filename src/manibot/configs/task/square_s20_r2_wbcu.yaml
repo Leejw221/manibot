@@ -1,0 +1,29 @@
+# @package _global_
+
+# **난이도를 통제한 square — 라운드 2 학습 데이터 (BC 계열, 누적)**
+#
+# 시연   data/square_s20_zarr             3,993 프레임 · 20 에피소드
+# 배포1  data/square_s20_deploy_r1_zarr   6,180 프레임 · 31 판 · 개입 69% (base 30K 로 수집)
+# 배포2  data/square_s20_deploy_r2_wbc_zarr 6,186 프레임 · 26 판 · 개입 49% (WDP FT 8K 로 수집)
+#         -> 합쳐 16,336 프레임 · 77 에피소드
+#
+# 구성은 **누적** [사용자 결정 2026-09-21]. 라운드가 갈수록 시연 비율이 줄지만
+# balanced 샘플러가 시연에 고정 할당(0.5)을 주므로 노출은 유지된다.
+#
+# ⚠ 수집 초기상태가 라운드 1 과 겹친다 — 초기상태 파일이 200판을 섞어 담고 수집은 항상
+#   앞에서부터 꺼낸다(r1 앞 31, r2 앞 27). 평가하는 S20SEEN 31판과 겹쳐 성장 측정은
+#   깨끗하지만 새 위치는 미탐색이다.
+#
+# ⚠ stats 는 시연 것을 그대로 쓴다 (merge_zarr 가 그렇게 둔다) — pi_ref 와 정규화가
+#   어긋나면 로그비가 의미를 잃는다.
+
+defaults:
+  - robomimic_square
+  - _self_
+
+task:
+  name: square_s20_r2_wbcu
+  hdf5_path: ${oc.env:MANIBOT_DATASETS_DIR,data}/square_scripted20/demos.hdf5
+  dataset_root: ${oc.env:MANIBOT_DATASETS_DIR,data}/square_s20_r2_wbcu_zarr
+  sim:
+    max_steps: 300

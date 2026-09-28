@@ -176,7 +176,11 @@ def create_dataloader(dataset, cfg: DictConfig, is_training=True):
     # 기댓값(WeightedRandomSampler)이 아니라 개수로 맞추는 이유: w_i 와 z_0 를 배치 안에서
     # 계산하므로 구성이 흔들리면 그 통계가 같이 흔들린다.
     ft = cfg.get("finetune", None)
-    if is_training and ft is not None and ft.get("enabled", False) and ft.get("labels"):
+    # balanced 를 null 로 두면 **데이터 분포 그대로** 뽑는다 — SIRIUS 의 방식이다
+    # ("Sample mini-batch (s,a,c) ~ D" 후 w=P*(c)/P(c) 로만 재조정) [원문 직접 2026-09-28].
+    # 손실의 가중은 그대로 살아 있으므로 "재가중을 한 번만 한다" 가 된다.
+    if (is_training and ft is not None and ft.get("enabled", False)
+            and ft.get("labels") and ft.get("balanced")):
         import numpy as np
 
         from manibot.datasets.apo_sampler import BalancedBatchSampler, split_pools
@@ -202,7 +206,11 @@ def create_dataloader(dataset, cfg: DictConfig, is_training=True):
             is_demo = ep[:len(sign)] < int(n_demo)
         pools = split_pools(sign, lab["has_intv"], allowed, is_demo, drop=_drop)
         names = ("시연", "롤아웃", "개입", "개입직전") if is_demo is not None else ("correct", "개입", "개입직전")
-        bs = BalancedBatchSampler(pools, batch_size, tuple(ft.balanced))
+        # 시드 연구를 하려면 배치 구성도 시드를 따라야 한다 — 기본값 0 으로 두면
+        # seed 를 바꿔도 배치 순서가 같아, 바뀌는 건 크롭·eps·t 추첨뿐이다.
+        # cfg.seed=0 이면 종전과 동일하므로 기존 결과는 변하지 않는다.
+        bs = BalancedBatchSampler(pools, batch_size, tuple(ft.balanced),
+                                  seed=int(cfg.get('seed', 0)))
         logger.info("APO balanced sampler: "
                     + " · ".join(f"{n} {len(p)}->{q}" for n, p, q in zip(names, pools, bs.per))
                     + f" · 1 에폭 {len(bs)} 배치")

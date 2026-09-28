@@ -45,7 +45,8 @@ class WeightedBCLoss:
         self.chunk_has = chunk_has
         self.beta_d = beta_d
         self.n_t = int(n_t)
-        self.lam_u_fixed = float(lam_u_fixed)
+        # None = U 도 desirable 과 같은 식으로 가중을 매긴다 (forward 참조)
+        self.lam_u_fixed = None if lam_u_fixed is None else float(lam_u_fixed)
         self.expert_mag = expert_mag
         self.use_mag = use_mag
         self.chunk_is_demo = chunk_is_demo
@@ -79,7 +80,16 @@ class WeightedBCLoss:
         # lam_D 만 쓴다 — apo_weights 는 sign<0 에 lam_U 를 주므로 그 자리를 상수로 덮는다.
         lam, wdiag = apo_weights(l_tilde, None, self.m_t, sign, mag,
                                  self.beta_d, self.beta_d)
-        lam = torch.where(sign < 0, torch.full_like(lam, self.lam_u_fixed), lam)
+        # lam_u_fixed 가 None 이면 **U 도 desirable 과 같은 식**으로 가중을 매긴다.
+        # apo_weights 는 부호로 갈래를 나누므로(sign>0 이면 1-exp, 아니면 exp) 그냥 두면
+        # U 가 억제 갈래로 떨어진다 — 부호를 +1 로 바꿔 한 번 더 불러야 한다.
+        # w 는 l_tilde 의 배치 정규화라 부호와 무관하므로 두 호출의 w 는 같다.
+        if self.lam_u_fixed is None:
+            lam_d_all, _ = apo_weights(l_tilde, None, self.m_t, torch.ones_like(sign), mag,
+                                       self.beta_d, self.beta_d)
+            lam = torch.where(sign < 0, lam_d_all, lam)
+        else:
+            lam = torch.where(sign < 0, torch.full_like(lam, self.lam_u_fixed), lam)
         lam = torch.where(sign == 0, torch.zeros_like(lam), lam)
         loss = (lam.detach() * l_the).mean()
 
