@@ -1,0 +1,22 @@
+# @package _global_
+
+# **난이도를 통제한 square — 라운드 2 학습 데이터 (wdpU — SIRIUS 방식, pre-intervention 을 rollout 으로 학습, 누적)**
+#
+# 시연   data/square_s20_zarr                       3,993 프레임 · 20 에피소드
+# 배포1  data/square_s20_deploy_r1_zarr             6,180 프레임 · 31 판 · 개입 69% (base 30K 로 수집)
+# 배포2  data/square_s20_deploy_r2_siriusu_zarr   6,201 프레임 · 26 판 · 개입 47% (라운드 1 76.5K 로 수집)
+#
+# ⚠ 수집 초기상태는 라운드 1 과 같은 파일에서 앞에서부터 꺼낸다 — 평가 S20SEEN 31판과 겹친다
+#   (square_s20_r2_wbcscr.yaml 과 같은 조건).
+# ⚠ stats 는 시연 것을 그대로 쓴다 (merge_zarr 가 그렇게 둔다).
+
+defaults:
+  - robomimic_square
+  - _self_
+
+task:
+  name: square_s20_r2_siriusu
+  hdf5_path: ${oc.env:MANIBOT_DATASETS_DIR,data}/square_scripted20/demos.hdf5
+  dataset_root: ${oc.env:MANIBOT_DATASETS_DIR,data}/square_s20_r2_siriusu_zarr
+  sim:
+    max_steps: 300

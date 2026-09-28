@@ -60,7 +60,7 @@ def _build_scheduler(policy, optimizer, num_steps, cfg):
     )
 
 
-def _build_finetune_loss(cfg, network):
+def _build_finetune_loss(cfg, network, dataset=None):
     """finetune.enabled 면 손실 객체를, 아니면 None 을 돌려준다(기존 경로 그대로)."""
     ft = cfg.get("finetune", None)
     if ft is None or not ft.get("enabled", False):
@@ -72,22 +72,41 @@ def _build_finetune_loss(cfg, network):
     if ft.loss == "bc":
         return None
 
-    # sirius = SIRIUS 원문 그대로. 클래스 단위 고정 가중 w=P*(c)/P(c) 를 곱한 BC.
-    # 배치는 자연 분포에서 뽑아야 하므로 **finetune.balanced=null 과 함께** 써야 한다.
+    # sirius = SIRIUS 공개 코드 그대로. 프레임 라벨 -> 시점별 고정 가중 w=P*(c)/P(c).
+    # APO 의 청크 점수(labels npz 의 S)는 쓰지 않는다 — 판정 단위가 달라 클래스 비율이 바뀐다.
+    # 원문에 없는 두 장치(balanced 배치 · n_t 다중 추첨)는 여기서 막는다.
     if ft.loss == "sirius":
         import numpy as np
         import zarr
+        from lerobot.utils.constants import ACTION
 
-        from manibot.losses.sirius import SiriusLoss
-        lab = np.load(ft.labels)
-        n_demo = int(ft.get("n_demo_episodes", None) or ft.apo.get("n_demo_log", 20))
-        ep = np.asarray(zarr.open(str(cfg.task.dataset_root), "r")["data"]["episode_index"]).ravel()
-        loss_fn = SiriusLoss(lab["S"], lab["has_intv"], ep[:len(lab["S"])] < n_demo,
-                             p_star_intv=float(ft.apo.get("p_star_intv", 0.5)),
-                             n_t=int(ft.apo.n_t))
+        from manibot.losses.sirius import LABELS, SiriusLoss
+        from manibot.utils.intervention_labels import LABEL_PREINTV, relabel_preintv
+        assert not ft.get("balanced"), "sirius 는 자연 분포 — finetune.balanced=null 로"
+        assert ft.get("n_demo_episodes"), "sirius 는 finetune.n_demo_episodes 가 필요하다"
+        n_demo = int(ft.n_demo_episodes)
+        use_preintv = bool(ft.get("sirius_preintv", True))
+        z = zarr.open(str(cfg.task.dataset_root), "r")["data"]
+        ep = np.asarray(z["episode_index"]).ravel()
+        mode = np.asarray(z["action_mode"]).ravel()
+        fl = np.empty(len(ep), dtype=np.int64)
+        for e in np.unique(ep):
+            s = ep == e
+            if e < n_demo:
+                fl[s] = LABELS["demo"]
+            elif not use_preintv:
+                fl[s] = mode[s]
+            else:
+                m = relabel_preintv(mode[s], k=15)   # fixed_preintv_length
+                fl[s] = np.where(m == LABEL_PREINTV, LABELS["preintv"], m)
+        # 액션 창은 데이터셋의 _get_query_indices 를 그대로 쓴다 (precompute_apo_labels 와 같은 이유)
+        act_idx = np.stack([np.asarray(dataset._get_query_indices(i, int(ep[i]))[0][ACTION])
+                            for i in range(len(dataset))])
+        # preintv 를 안 떼면 그 클래스가 없으므로 목표비도 0 — 원문식의 -0.002 가 rollout 몫을 깎지 않게
+        loss_fn = SiriusLoss(fl, act_idx, p_star_preintv=0.002 if use_preintv else 0.0)
         logger.info("SIRIUS 가중  " + "  ".join(
-            f"{c}: n={loss_fn.n[c]} P={loss_fn.P[c]:.4f} P*={loss_fn.Ps[c]:.4f} w={loss_fn.w_cls[c]:.3f}"
-            for c in ("demo", "intv", "robot", "preintv")))
+            f"{c}: n={loss_fn.n[c]} P={loss_fn.P[c]:.4f} w={loss_fn.w_cls[c]:.3f}"
+            for c in LABELS))
         return loss_fn
 
     # wbc = 가중 BC. SIRIUS 의 구조(가중 모방)에 APO 의 적응 가중을 넣고 undesirable 은
@@ -123,7 +142,7 @@ def _build_finetune_loss(cfg, network):
     from manibot.utils.dataset_utils import create_dataset_stats
     from manibot.utils.task_utils import derive_task_meta
 
-    assert ft.loss == "apo", f"finetune.loss={ft.loss!r} 미지원 (apo | bc | wbc)"
+    assert ft.loss == "apo", f"finetune.loss={ft.loss!r} 미지원 (apo | bc | wbc | sirius)"
     for k in ("ref_checkpoint", "labels", "t_stats"):
         assert ft.get(k), f"finetune.{k} 를 지정해야 한다"
 
@@ -246,7 +265,7 @@ class PolicyTrainer:
 
         # 선호 최적화(APO) — 정책 두 개가 필요한 손실은 network 밖에서 조립한다.
         # network 는 끝까지 평범한 정책이라 체크포인트·EMA·eval 경로가 안 바뀐다.
-        self.loss_fn = _build_finetune_loss(config, network)
+        self.loss_fn = _build_finetune_loss(config, network, train_dataloader.dataset)
 
         # 고정 probe — 새 데이터를 배우는 동안 기존 적합을 얼마나 잃는지 곡선으로 본다 (freq 0 이면 끔).
         self.probe = None

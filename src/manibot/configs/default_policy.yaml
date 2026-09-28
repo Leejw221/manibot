@@ -117,7 +117,7 @@ wandb:
 # enabled=false 면 기존 학습 경로가 **한 글자도 안 바뀐다**.
 finetune:
   enabled: false
-  loss: apo                 # apo | bc(가중 없는 대조군) | wbc(가중 BC) | (나중에 sirius)
+  loss: apo                 # apo | bc(가중 없는 대조군) | wbc(가중 BC) | sirius(SIRIUS 공개 코드)
   ref_checkpoint: null      # pi_ref.  반드시 지정
   theta_init: null          # pi_theta 시작점. null 이면 ref_checkpoint (APO 원문 기본)
   labels: null              # precompute_apo_labels 의 npz (S, has_intv)
@@ -127,6 +127,8 @@ finetune:
                                 #   시연 / 정책 롤아웃 / 개입 / 개입직전
   n_demo_episodes: null         # 앞 N 개 에피소드를 '시연' 으로 따로 뗀다(ph50 이면 50).
                                 # null 이면 지금까지의 3풀 동작 그대로.
+  sirius_preintv: true          # loss=sirius 전용. false 면 개입 직전 15 프레임을 따로 떼지 않고
+                                # rollout 으로 둔다 -> "거의 학습 안 함"(0.002/P) 대신 rollout 가중으로 학습 (wdpU)
   load_optimizer: null          # 체크포인트 경로를 주면 **optimizer 상태(m·v)만** 이어받는다.
                                 # 스케줄러·step 은 새로 시작하므로 resume 과 다르다.
                                 # 공개 코드는 fine-tuning 때 전부 새로 만들지만 이유가 적혀 있지 않고,
