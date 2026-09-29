@@ -19,6 +19,12 @@
 
 DP 로 옮기며 바뀐 것은 샘플별 손실뿐이다: -log pi(a_t|s) 대신 시점 t 의 노이즈 예측 MSE
 (행동 차원 평균). 가중을 뺀 손실은 LeRobot DP 의 기본 손실(t 하나, 전 원소 MSE 평균)과 같다.
+
+기본값은 **이전 실로봇 실험(PDF)·mani_sim 방식**이다 [사용자 결정 2026-09-29: "그게 잘 되었던 방식"]:
+    chunk_mean  청크 16칸 가중의 평균을 샘플 가중으로 (PDF 19쪽 · mani_sim diffusion_trainer.py:507)
+    normalize   sum(w*l)/sum(w) — 배치 가중 평균으로 나눈다 (PDF 12쪽 · 같은 파일 :511)
+    음수 가중    0 으로 자른다 (PDF 14쪽 "Clipped to 0"). 원문 식은 P(demo) > 0.498 이면 음수가 된다.
+둘 다 끄면 SIRIUS 원문 코드(칸별 가중 · 정규화 없음)다.
 """
 
 import numpy as np
@@ -32,7 +38,8 @@ LABELS = {"demo": -1, "robot": 0, "intv": 1, "preintv": -10}
 
 
 class SiriusLoss:
-    def __init__(self, frame_label, act_idx, p_star_intv=0.5, p_star_preintv=0.002):
+    def __init__(self, frame_label, act_idx, p_star_intv=0.5, p_star_preintv=0.002,
+                 chunk_mean=True, normalize=True):
         """frame_label: (F,) 프레임 라벨.  act_idx: (N, H) 샘플 i 의 액션 창 프레임 인덱스."""
         fl = np.asarray(frame_label, dtype=np.int64)
         act_idx = np.asarray(act_idx, dtype=np.int64)
@@ -43,13 +50,16 @@ class SiriusLoss:
         self.w_cls = {
             "demo": 1.0,
             "intv": p_star_intv / self.P["intv"] if self.n["intv"] else 0.0,
-            "robot": ((1.0 - p_star_intv - self.P["demo"] - p_star_preintv) / self.P["robot"]
+            "robot": (max(0.0, 1.0 - p_star_intv - self.P["demo"] - p_star_preintv) / self.P["robot"]
                       if self.n["robot"] else 0.0),
             "preintv": p_star_preintv / self.P["preintv"] if self.n["preintv"] else 0.0,
         }
         lut = {LABELS[c]: w for c, w in self.w_cls.items()}
         self.lab = fl[act_idx]                                   # (N, H)
         self.w = np.vectorize(lut.get)(self.lab).astype(np.float32)
+        if chunk_mean:
+            self.w = np.repeat(self.w.mean(1, keepdims=True), self.w.shape[1], axis=1)
+        self.normalize = bool(normalize)
 
     def __call__(self, policy, batch):
         m = policy.diffusion
@@ -62,7 +72,8 @@ class SiriusLoss:
         eps = torch.randn_like(x0)
         e_the, _, _ = unet_out(m, cond, x0, t, eps)
         l_t = ((eps - e_the) ** 2).mean(dim=2)                  # (B, H) 시점별
-        loss = (w * l_t).mean()
+        # chunk_mean 이면 w 가 칸마다 같아 (w * l_t) 가 w_i * (청크 MSE) 와 같다
+        loss = (w * l_t).sum() / w.sum().clamp_min(1e-8) if self.normalize else (w * l_t).mean()
 
         out = {"w_mean": float(w.mean()), "l_the_mean": float(l_t.mean().detach())}
         lab = torch.as_tensor(self.lab[idx], device=x0.device)

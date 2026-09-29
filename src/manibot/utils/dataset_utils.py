@@ -116,19 +116,20 @@ def create_dataset(policy, cfg: DictConfig, episodes=None):
 
     logger.info(f"Creating dataset with repo_id={cfg.task.dataset_repo_id} and root={cfg.task.dataset_root}")
 
-    # 두 계열의 창 규약이 다르므로 정책에게 물어본다. 우리 정책은 관측 [0..h-1] ·
-    # 행동 [0..Tp-1] 로 **같은 앵커**를 쓴다 = 행동 창이 관측 창의 시작에 붙는다
-    # (LeRobot 도 같다: observation_delta_indices=range(1-h,1) ·
-    #  action_delta_indices=range(1-h, 1-h+Tp)).  그래서 추론 때 첫 (h-1) 칸은 과거이고,
-    # **`rollout/policy_server.make_predict_fn` 이 그걸 잘라서** 청크가 "지금"부터
-    # 시작하게 만든다.  호출하는 쪽은 그 규약 하나만 안다.
+    # 두 계열 모두 **행동 창이 관측 창의 시작에 붙는다** — 추론 때 첫 (h-1) 칸은 과거이고
+    # 잘라낸 뒤 첫 칸이 "지금"이다. 우리 정책은 관측 [0..h-1] · 행동 [0..Tp-1] 을 선언하고
+    # make_predict_fn 이 h-1 칸을 자른다. LeRobot 정책은 선언이 없으므로 LeRobot 기본값
+    # (configuration_diffusion.py:251-256) 을 그대로 쓰고, generate_actions 가
+    # actions[:, n_obs_steps-1:] 로 자른다 (modeling_diffusion.py:329-331).
+    # ⚠ 2026-09-29 까지 여기는 행동을 range(Tp) 로 잡아 관측의 **끝**에 붙였다. 그러면
+    #   시점 t 에 실행하는 첫 칸이 학습 때 a_{t+1} 로 배운 칸이었다 (한 칸 어긋남).
     if hasattr(policy, "get_observation_indices"):
         obs_indices = policy.get_observation_indices()
         action_indices = policy.get_action_indices()
     else:
         n_obs = cfg.policy.obs_horizon
-        obs_indices = list(range(-(n_obs - 1), 1))
-        action_indices = list(range(cfg.policy.pred_horizon))
+        obs_indices = list(range(1 - n_obs, 1))
+        action_indices = list(range(1 - n_obs, 1 - n_obs + cfg.policy.pred_horizon))
 
     delta_timestamps = {
         **{k: [i / cfg.task.fps for i in obs_indices] for k in cfg.task.image_keys},

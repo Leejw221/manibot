@@ -129,6 +129,10 @@ finetune:
                                 # null 이면 지금까지의 3풀 동작 그대로.
   sirius_preintv: true          # loss=sirius 전용. false 면 개입 직전 15 프레임을 따로 떼지 않고
                                 # rollout 으로 둔다 -> "거의 학습 안 함"(0.002/P) 대신 rollout 가중으로 학습 (wdpU)
+  sirius_chunk_mean: true       # loss=sirius. true = 청크 안 16칸 가중의 평균을 샘플 가중으로 (PDF·mani_sim 방식)
+                                #              false = 칸마다 자기 가중 (SIRIUS 원문 코드)
+  sirius_normalize: true        # loss=sirius. true = 배치 가중 평균으로 나눈다 sum(w*l)/sum(w) (PDF·mani_sim)
+                                #              false = 나누지 않는다 (SIRIUS 원문 normalize=false)
   load_optimizer: null          # 체크포인트 경로를 주면 **optimizer 상태(m·v)만** 이어받는다.
                                 # 스케줄러·step 은 새로 시작하므로 resume 과 다르다.
                                 # 공개 코드는 fine-tuning 때 전부 새로 만들지만 이유가 적혀 있지 않고,

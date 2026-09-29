@@ -144,13 +144,16 @@ def collect(cfg: DictConfig):
     # 라운드 크기는 에피소드가 아니라 **프레임**으로 정한다 — SIRIUS/APO 두 조건에 같은
     # 데이터량을 주려는 규약이다 (`mani_sim/scripts/collect.py:341`). 목표를 넘는 분량은
     # 에피소드를 자르지 않으니 자연히 생긴다. 합친 데이터셋의 demo 비율 = 1/(1+ratio).
+    # round_count: frames = 배포 프레임 전체로 센다 (mani_sim collect.py:343 과 같다)
+    #              intv   = **개입 프레임**으로 센다 (이전 실로봇 실험 PDF 14쪽
+    #                       "Cumulative intervention sample > demo sample x 1.5")
+    count_intv = cfg.get("round_count", "frames") == "intv"
     round_threshold = None
     if cfg.get("round_size_ratio"):
         demo_frames = _demo_frame_count(cfg)
         round_threshold = int(demo_frames * cfg.round_size_ratio)
-        logger.info(f"[라운드 목표] {round_threshold:,} 프레임 "
-                    f"({cfg.round_size_ratio}x {demo_frames:,} demo 프레임 -> "
-                    f"합친 데이터셋 demo 비율 {1.0 / (1.0 + cfg.round_size_ratio):.0%})")
+        logger.info(f"[라운드 목표] {'개입 ' if count_intv else ''}{round_threshold:,} 프레임 "
+                    f"({cfg.round_size_ratio}x {demo_frames:,} demo 프레임)")
     ep_success = dd.read_success(ds.root)
     kept0 = len(ep_success)
     # 이어받기 — 기존 sim_states 를 읽어 길이를 맞춘다(없으면 None 으로 채운다).
@@ -161,6 +164,8 @@ def collect(cfg: DictConfig):
     frame_store = _read_frames(ds.root)
     round_frames = int(getattr(ds, "num_frames", 0) or 0)     # 이어받은 분량부터 센다
     intv_frames = 0
+    if kept0 and count_intv:                                   # 이어받은 분량의 개입도 센다
+        intv_frames = int(np.sum(np.asarray(ds.hf_dataset["action_mode"]) == LABEL_INTV))
     logger.info(f"저장: {ds.root} (repo_id={cfg.repo_id})\n키: {HELP}")
 
     # 비동기 추론 — 재생하는 동안 다음 청크를 계산한다. 실물에는 추론 지연이 원래 있으므로
@@ -172,9 +177,10 @@ def collect(cfg: DictConfig):
     from collections import deque
     kept = 0
     while not trig.events["stop_recording"]:
-        if round_threshold is not None and round_frames >= round_threshold:
-            logger.info(f"[라운드 종료] 목표 프레임 달성 "
-                        f"({round_frames:,} >= {round_threshold:,})")
+        counted = intv_frames if count_intv else round_frames
+        if round_threshold is not None and counted >= round_threshold:
+            logger.info(f"[라운드 종료] 목표 {'개입 ' if count_intv else ''}프레임 달성 "
+                        f"({counted:,} >= {round_threshold:,})")
             break
         if kept0 + kept >= cfg.n_episodes:      # 안전 상한
             logger.info(f"[중단] 에피소드 상한 {cfg.n_episodes} 도달")
@@ -304,8 +310,9 @@ def collect(cfg: DictConfig):
         kept += 1
         round_frames += len(frames)
         intv_frames += n_i
-        prog = (f"{round_frames:,}/{round_threshold:,} 프레임"
-                if round_threshold else f"{kept0+kept}/{cfg.n_episodes} 에피소드")
+        prog = (f"개입 {intv_frames:,}/{round_threshold:,} 프레임" if round_threshold and count_intv
+                else f"{round_frames:,}/{round_threshold:,} 프레임" if round_threshold
+                else f"{kept0+kept}/{cfg.n_episodes} 에피소드")
         logger.info(f"  ep{kept0+kept-1}: {len(frames):4d} 프레임 · 개입 {n_i} · "
                     f"{'성공' if success else '실패'} · 반환후보 {len(marks)} · 누적 {prog} "
                     f"(개입 {intv_frames/max(round_frames,1):.0%})")
