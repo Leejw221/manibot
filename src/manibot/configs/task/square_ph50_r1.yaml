@@ -1,0 +1,18 @@
+# @package _global_
+
+# **공개 square-ph 50판 — 라운드 1 학습 데이터 (SIRIUS 방식, 누적)**
+#
+# 시연   data/square_ph50_zarr              7,468 프레임 · 50 에피소드 (사람 시연)
+# 배포1  data/square_ph50_deploy_r1_zarr    7,273 프레임 · 44 판 · 개입 2,544 (35%)
+#        ph50-base-v2 50K 로 수집 · 무작위 초기화 seed 1001 · 개입은 스크립트 전문가가 성공까지
+#        라운드 종료 = 누적 개입 프레임 >= 시연 7,468 x 1/3 (SIRIUS 논문 문장, 2026-09-30 사용자 결정)
+#
+# ⚠ stats 는 시연 것을 그대로 쓴다 (merge_zarr 가 그렇게 둔다).
+
+defaults:
+  - square_ph50
+  - _self_
+
+task:
+  name: square_ph50_r1
+  dataset_root: ${oc.env:MANIBOT_DATASETS_DIR,data}/square_ph50_r1_zarr
