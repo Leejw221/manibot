@@ -269,6 +269,18 @@ class PolicyTrainer:
         # network 는 끝까지 평범한 정책이라 체크포인트·EMA·eval 경로가 안 바뀐다.
         self.loss_fn = _build_finetune_loss(config, network, train_dataloader.dataset)
 
+        # 행동 창에 preintv 칸이 k 개 이상인 샘플은 배치에 아예 넣지 않는다 (가중 0 과 다르다).
+        # 가중(P)은 전체 데이터 기준 그대로 둔다 — 넣지 않는 것 말고는 제외 안 한 run 과 같게.
+        k_drop = config.get("finetune", {}).get("sirius_drop_preintv_min")
+        if k_drop:
+            from manibot.losses.sirius import LABELS, SiriusLoss
+            assert isinstance(self.loss_fn, SiriusLoss), "sirius_drop_preintv_min 은 loss=sirius 전용"
+            sampler = train_dataloader.sampler
+            n_pre = (self.loss_fn.lab == LABELS["preintv"]).sum(1)
+            before = len(sampler.indices)
+            sampler.indices = [i for i in sampler.indices if n_pre[i] < k_drop]
+            logger.info(f"preintv {k_drop}칸 이상 샘플 제외: {before} -> {len(sampler.indices)}")
+
         # 고정 probe — 새 데이터를 배우는 동안 기존 적합을 얼마나 잃는지 곡선으로 본다 (freq 0 이면 끔).
         self.probe = None
         if config.get("probe", {}).get("freq", 0) > 0:

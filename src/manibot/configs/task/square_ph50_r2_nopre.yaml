@@ -1,0 +1,17 @@
+# @package _global_
+
+# **공개 square-ph 50판 — 실험 ③ 라운드 2 학습 데이터 (SIRIUS 방식, preintv 를 rollout 으로)**
+#
+# 시연   data/square_ph50_zarr                  7,468 프레임 · 50 에피소드 (사람 시연)
+# 배포1  data/square_ph50_deploy_r1_zarr        6차 배포1 (base 로 수집 · seed 1001) — ① 과 같다
+# 배포2  data/square_ph50_deploy_r2_nopre_zarr  ph50-r1-sirius-nopre 로 seed 1002 · 개입 2,489 프레임에서 종료
+#
+# ⚠ stats 는 시연 것을 그대로 쓴다 (merge_zarr 가 그렇게 둔다).
+
+defaults:
+  - square_ph50
+  - _self_
+
+task:
+  name: square_ph50_r2_nopre
+  dataset_root: ${oc.env:MANIBOT_DATASETS_DIR,data}/square_ph50_r2_nopre_zarr

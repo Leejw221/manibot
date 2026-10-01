@@ -1,0 +1,18 @@
+# @package _global_
+
+# **공개 square-ph 50판 — 실험 ⑤ 라운드 1 학습 데이터 (자율 성공 에피소드만, 가중 없음)**
+#
+# 시연   data/square_ph50_zarr                  7,468 프레임 · 50 에피소드 (사람 시연)
+# 배포1  data/square_ph50_deploy_r1_auto_zarr   3,733 프레임 · 27 판
+#        = 6차 배포1(data/square_ph50_deploy_r1_zarr, ph50-base-v2 로 수집 · seed 1001) 44 판 중
+#          **개입 없이 성공한** 판만 (~/claude/filter_auto_episodes.py)
+#
+# ⚠ stats 는 시연 것을 그대로 쓴다 (merge_zarr 가 그렇게 둔다).
+
+defaults:
+  - square_ph50
+  - _self_
+
+task:
+  name: square_ph50_r1_auto
+  dataset_root: ${oc.env:MANIBOT_DATASETS_DIR,data}/square_ph50_r1_auto_zarr
