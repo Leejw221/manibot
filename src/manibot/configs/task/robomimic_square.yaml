@@ -34,6 +34,9 @@ task:
     backend: robosuite
     # 스크립트 시연·개입 교정 행동을 내는 전문가 (collect_scripted 가 이걸 쓴다).
     expert: manibot.envs.square_expert.SquareExpert
+    # 개입할 때 이어받는 전문가 (collect_intervention). 궤적을 만들어 두고 따라간다 [사용자 2026-10-04].
+    # 없으면 위 expert 를 쓴다.
+    intervention_expert: manibot.envs.square_expert.SquareScriptedExpert
     controller_fn: null          # null 이면 robosuite BASIC(OSC) 을 쓴다
     env_name: NutAssemblySquare
     robots: Panda
