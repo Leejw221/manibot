@@ -152,6 +152,9 @@ finetune:
                                 # (null = 원문대로 나머지 몫 1 - P*(intv) - P(demo) - P*(preintv))
   sirius_drop_preintv_min: null # loss=sirius. k 를 주면 행동 창 16칸 중 preintv 가 k 칸 이상인 샘플을
                                 # 배치에 아예 넣지 않는다 (과반 = 9). 가중(P)은 전체 데이터 기준 그대로
+  sirius_chunk_label: first     # loss=sirius. first = 첫 칸 라벨로 센다(8차까지) · majority = 16칸 과반
+                                # (동률이면 preintv 아닌 쪽), 청크 하나에 가중 하나. majority 는 +policy.drop_n_last_frames=0
+  sirius_p_star_auto: null      # loss=sirius. 주면 robot+preintv 를 한 클래스로 합쳐 목표 몫을 이 값으로 (④ 재학습)
   load_optimizer: null          # 체크포인트 경로를 주면 **optimizer 상태(m·v)만** 이어받는다.
                                 # 스케줄러·step 은 새로 시작하므로 resume 과 다르다.
                                 # 공개 코드는 fine-tuning 때 전부 새로 만들지만 이유가 적혀 있지 않고,

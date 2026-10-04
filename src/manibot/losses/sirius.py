@@ -25,6 +25,16 @@ DP 로 옮기며 바뀐 것은 샘플별 손실뿐이다: -log pi(a_t|s) 대신 
     normalize   sum(w*l)/sum(w) — 배치 가중 평균으로 나눈다 (PDF 12쪽 · 같은 파일 :511)
     음수 가중    0 으로 자른다 (PDF 14쪽 "Clipped to 0"). 원문 식은 P(demo) > 0.498 이면 음수가 된다.
 둘 다 끄면 SIRIUS 원문 코드(칸별 가중 · 정규화 없음)다.
+
+chunk_label="majority" [사용자 결정 2026-10-05]: 샘플(청크) 하나에 클래스 하나.
+    첫 칸으로 세고 칸 평균으로 가중하면 세는 단위와 가중 단위가 달라 P* 가 실제 손실 몫이
+    되지 않는다(8차 ① r1 preintv 목표 0.2% -> 실제 2.66%). 16칸 과반으로 정하고, 동률이면
+    preintv 가 아닌 쪽. 가중 w(c)=P*(c)/P(c) 를 16칸에 같은 값으로 준다.
+    개입 뒤 제어를 돌려주지 않는다고 가정하므로 한 창의 라벨은 많아야 둘(robot|preintv ·
+    preintv|intv) — preintv 가 끼지 않은 동률은 생기지 않는다.
+p_star_auto [사용자 2026-10-05, ④ "전체 자율 수행 구간에 pre-intervention 가중"]:
+    robot 과 preintv 를 한 클래스로 보고 둘이 합쳐 목표 몫 p_star_auto. 남는 몫은 어디에도 주지
+    않는다 — normalize 가 demo 와 intv 에 비례로 나눠 demo:intv 비가 ① 과 같게 남는다.
 """
 
 import numpy as np
@@ -39,13 +49,22 @@ LABELS = {"demo": -1, "robot": 0, "intv": 1, "preintv": -10}
 
 class SiriusLoss:
     def __init__(self, frame_label, act_idx, p_star_intv=0.5, p_star_preintv=0.002,
-                 chunk_mean=True, normalize=True, p_star_robot=None):
+                 chunk_mean=True, normalize=True, p_star_robot=None,
+                 chunk_label="first", p_star_auto=None):
         """frame_label: (F,) 프레임 라벨.  act_idx: (N, H) 샘플 i 의 액션 창 프레임 인덱스."""
+        assert chunk_label in ("first", "majority"), chunk_label
         fl = np.asarray(frame_label, dtype=np.int64)
         act_idx = np.asarray(act_idx, dtype=np.int64)
-        first = fl[act_idx[:, 0]]
-        N = len(first)
-        self.n = {c: int((first == v).sum()) for c, v in LABELS.items()}
+        self.lab = fl[act_idx]                                   # (N, H)
+        if chunk_label == "majority":
+            vals = np.array(list(LABELS.values()))
+            cnt = (self.lab[:, :, None] == vals).sum(1).astype(np.float64)   # (N, 4)
+            cnt[:, vals == LABELS["preintv"]] -= 0.5             # 동률이면 preintv 가 아닌 쪽
+            cls = vals[cnt.argmax(1)]
+        else:
+            cls = self.lab[:, 0]
+        N = len(cls)
+        self.n = {c: int((cls == v).sum()) for c, v in LABELS.items()}
         self.P = {c: n / N for c, n in self.n.items()}
         self.w_cls = {
             "demo": 1.0,
@@ -56,11 +75,19 @@ class SiriusLoss:
                       if self.n["robot"] else 0.0),
             "preintv": p_star_preintv / self.P["preintv"] if self.n["preintv"] else 0.0,
         }
+        if p_star_auto is not None:
+            assert p_star_robot is None, "p_star_auto 와 p_star_robot 은 함께 쓰지 않는다"
+            p_auto = self.P["robot"] + self.P["preintv"]
+            self.w_cls["robot"] = self.w_cls["preintv"] = p_star_auto / p_auto if p_auto else 0.0
         lut = {LABELS[c]: w for c, w in self.w_cls.items()}
-        self.lab = fl[act_idx]                                   # (N, H)
-        self.w = np.vectorize(lut.get)(self.lab).astype(np.float32)
-        if chunk_mean:
-            self.w = np.repeat(self.w.mean(1, keepdims=True), self.w.shape[1], axis=1)
+        if chunk_label == "majority":
+            self.w = np.repeat(np.vectorize(lut.get)(cls)[:, None], self.lab.shape[1], axis=1)
+            self.w = self.w.astype(np.float32)
+        else:
+            self.w = np.vectorize(lut.get)(self.lab).astype(np.float32)
+            if chunk_mean:
+                self.w = np.repeat(self.w.mean(1, keepdims=True), self.w.shape[1], axis=1)
+        self.cls = cls
         self.normalize = bool(normalize)
 
     def __call__(self, policy, batch):

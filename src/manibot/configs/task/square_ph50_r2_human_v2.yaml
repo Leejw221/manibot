@@ -1,0 +1,20 @@
+# @package _global_
+
+# **공개 square-ph 50판 — 실험 ④ 다시(v2) 라운드 2 학습 데이터** [사용자 2026-10-05 "요소 4만 round 1부터 다시"]
+#
+# 시연   data/square_ph50_zarr                     7,468 프레임 · 50 에피소드 (사람 시연)
+# 배포1  data/square_ph50_deploy_r1_zarr           6차 배포1 (base 로 수집 · seed 1001) — ① 과 같다
+# 배포2  data/square_ph50_deploy_r2_human_v2_zarr  ph50-r1-sirius-human-v2 로 seed 1002 · 개입 2,489 프레임에서 종료
+#        47 판 · 8,225 프레임 · 개입 2,516 (31%) · 개입 판 22 · 성공 47/47 (2026-10-05 07:18~07:30,
+#        temporal_ensemble · request_period 0 · 8칸 · 예전 전문가)
+# 합계   141 에피소드 · 22,966 프레임
+#
+# ⚠ stats 는 시연 것을 그대로 쓴다 (merge_zarr 가 그렇게 둔다).
+
+defaults:
+  - square_ph50
+  - _self_
+
+task:
+  name: square_ph50_r2_human_v2
+  dataset_root: ${oc.env:MANIBOT_DATASETS_DIR,data}/square_ph50_r2_human_v2_zarr

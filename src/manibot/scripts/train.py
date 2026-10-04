@@ -102,12 +102,19 @@ def _build_finetune_loss(cfg, network, dataset=None):
         # 액션 창은 데이터셋의 _get_query_indices 를 그대로 쓴다 (precompute_apo_labels 와 같은 이유)
         act_idx = np.stack([np.asarray(dataset._get_query_indices(i, int(ep[i]))[0][ACTION])
                             for i in range(len(dataset))])
+        chunk_label = ft.get("sirius_chunk_label", "first")
+        if chunk_label == "majority":
+            # P 를 학습 샘플로 센다 — 위 act_idx 는 데이터셋 전체이므로 샘플러도 전체여야 같다
+            assert cfg.policy.get("drop_n_last_frames") == 0, \
+                "sirius_chunk_label=majority 는 +policy.drop_n_last_frames=0 과 함께 (모든 프레임이 샘플)"
         # preintv 를 안 떼면 그 클래스가 없으므로 목표비도 0 — 원문식의 -0.002 가 rollout 몫을 깎지 않게
         loss_fn = SiriusLoss(fl, act_idx, p_star_preintv=0.002 if use_preintv else 0.0,
                              chunk_mean=bool(ft.get("sirius_chunk_mean", True)),
                              normalize=bool(ft.get("sirius_normalize", True)),
-                             p_star_robot=ft.get("sirius_p_star_robot"))
-        logger.info("SIRIUS 가중  " + "  ".join(
+                             p_star_robot=ft.get("sirius_p_star_robot"),
+                             chunk_label=chunk_label,
+                             p_star_auto=ft.get("sirius_p_star_auto"))
+        logger.info(f"SIRIUS 가중 (클래스={chunk_label})  " + "  ".join(
             f"{c}: n={loss_fn.n[c]} P={loss_fn.P[c]:.4f} w={loss_fn.w_cls[c]:.3f}"
             for c in LABELS))
         return loss_fn
