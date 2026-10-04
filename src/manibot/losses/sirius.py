@@ -39,7 +39,7 @@ LABELS = {"demo": -1, "robot": 0, "intv": 1, "preintv": -10}
 
 class SiriusLoss:
     def __init__(self, frame_label, act_idx, p_star_intv=0.5, p_star_preintv=0.002,
-                 chunk_mean=True, normalize=True):
+                 chunk_mean=True, normalize=True, p_star_robot=None):
         """frame_label: (F,) 프레임 라벨.  act_idx: (N, H) 샘플 i 의 액션 창 프레임 인덱스."""
         fl = np.asarray(frame_label, dtype=np.int64)
         act_idx = np.asarray(act_idx, dtype=np.int64)
@@ -50,7 +50,9 @@ class SiriusLoss:
         self.w_cls = {
             "demo": 1.0,
             "intv": p_star_intv / self.P["intv"] if self.n["intv"] else 0.0,
-            "robot": (max(0.0, 1.0 - p_star_intv - self.P["demo"] - p_star_preintv) / self.P["robot"]
+            # p_star_robot 를 주면 rollout 도 preintv 처럼 목표 몫을 고정한다 (원문은 나머지 몫)
+            "robot": ((p_star_robot if p_star_robot is not None
+                       else max(0.0, 1.0 - p_star_intv - self.P["demo"] - p_star_preintv)) / self.P["robot"]
                       if self.n["robot"] else 0.0),
             "preintv": p_star_preintv / self.P["preintv"] if self.n["preintv"] else 0.0,
         }

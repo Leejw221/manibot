@@ -1,0 +1,20 @@
+# @package _global_
+
+# **공개 square-ph 50판 — 라운드 3 학습 데이터 (① SIRIUS 방식, 누적)**
+#
+# 시연   data/square_ph50_zarr              7,468 프레임 · 50 에피소드 (사람 시연)
+# 배포1  data/square_ph50_deploy_r1_zarr    7,273 프레임 · 44 판 · 개입 2,544 (35%)   ph50-base-v2 50K · seed 1001
+# 배포2  data/square_ph50_deploy_r2_zarr   10,317 프레임 · 63 판 · 개입 2,633 (26%)   ph50-r1-sirius 99K · seed 1002
+# 배포3  data/square_ph50_deploy_r3_zarr   10,428 프레임 · 60 판 · 개입 2,536 (24%)   ph50-r2-sirius 168K · seed 1003
+#        수집 규약은 배포1·2 와 같다: 무작위 초기화 · 예전 실행 설정(temporal_ensemble · 요청 0 · 8칸) ·
+#        예전 스크립트 전문가(SquareExpert)가 성공까지 · 종료 = 누적 개입 >= 시연 7,468 x 1/3 [사용자 2026-10-04]
+#
+# ⚠ stats 는 시연 것을 그대로 쓴다 (merge_zarr 가 그렇게 둔다).
+
+defaults:
+  - square_ph50
+  - _self_
+
+task:
+  name: square_ph50_r3
+  dataset_root: ${oc.env:MANIBOT_DATASETS_DIR,data}/square_ph50_r3_zarr

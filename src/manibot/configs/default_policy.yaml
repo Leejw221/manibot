@@ -133,6 +133,8 @@ finetune:
                                 #              false = 칸마다 자기 가중 (SIRIUS 원문 코드)
   sirius_normalize: true        # loss=sirius. true = 배치 가중 평균으로 나눈다 sum(w*l)/sum(w) (PDF·mani_sim)
                                 #              false = 나누지 않는다 (SIRIUS 원문 normalize=false)
+  sirius_p_star_robot: null     # loss=sirius. 주면 rollout 의 목표 몫 P*(robot) 을 이 값으로 고정한다
+                                # (null = 원문대로 나머지 몫 1 - P*(intv) - P(demo) - P*(preintv))
   sirius_drop_preintv_min: null # loss=sirius. k 를 주면 행동 창 16칸 중 preintv 가 k 칸 이상인 샘플을
                                 # 배치에 아예 넣지 않는다 (과반 = 9). 가중(P)은 전체 데이터 기준 그대로
   load_optimizer: null          # 체크포인트 경로를 주면 **optimizer 상태(m·v)만** 이어받는다.

@@ -105,7 +105,8 @@ def _build_finetune_loss(cfg, network, dataset=None):
         # preintv 를 안 떼면 그 클래스가 없으므로 목표비도 0 — 원문식의 -0.002 가 rollout 몫을 깎지 않게
         loss_fn = SiriusLoss(fl, act_idx, p_star_preintv=0.002 if use_preintv else 0.0,
                              chunk_mean=bool(ft.get("sirius_chunk_mean", True)),
-                             normalize=bool(ft.get("sirius_normalize", True)))
+                             normalize=bool(ft.get("sirius_normalize", True)),
+                             p_star_robot=ft.get("sirius_p_star_robot"))
         logger.info("SIRIUS 가중  " + "  ".join(
             f"{c}: n={loss_fn.n[c]} P={loss_fn.P[c]:.4f} w={loss_fn.w_cls[c]:.3f}"
             for c in LABELS))
