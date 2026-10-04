@@ -116,11 +116,14 @@ def collect(cfg: DictConfig):
     if cfg.get("init_states"):
         _init_states = list(np.load(cfg.init_states)["states"])
         logger.info(f"고정 초기상태 {len(_init_states)}개 사용: {cfg.init_states}")
-    Expert = resolve(cfg.task.sim.expert)
+    Expert = resolve(cfg.task.sim.get("intervention_expert") or cfg.task.sim.expert)
+    logger.info(f"개입 전문가: {Expert.__module__}.{Expert.__name__}")
     low_dim = list(cfg.task.sim.state_from)
     # robosuite 카메라 이름 -> 우리 관측 이름. LeRobot 특징 이름이 이 매핑을 그대로 쓴다
     cams = OmegaConf.to_container(cfg.task.sim.cameras, resolve=True)
-    predict_fn = make_predict_fn(policy, cfg, cfg.device, preprocessor=pre, postprocessor=post)
+    predict_fn = make_predict_fn(policy, cfg, cfg.device, preprocessor=pre, postprocessor=post,
+                                 full_chunk=cfg.get("full_chunk", False))
+    off = predict_fn.anchor_offset      # 청크 첫 칸이 요청 step 보다 몇 칸 앞인가 (full_chunk 면 h-1)
     obs_h, act_h = cfg.policy.obs_horizon, cfg.policy.action_horizon
 
     trig = KeyboardTrigger()
@@ -172,7 +175,10 @@ def collect(cfg: DictConfig):
     # 시뮬도 같은 구조로 둔다. 지연은 없애지 않고 **흡수**한다: 청크를 시각에 앵커해 merger
     # 에서 꺼내므로 늦게 온 청크는 앞부분이 버려질 뿐, 실행되는 행동은 언제나 지금의 예측이다.
     pool = ThreadPoolExecutor(1) if cfg.async_infer else None
-    merger = make_merger(cfg.merger, te_coeff=cfg.te_coeff)
+    merger = make_merger(cfg.merger, te_coeff=cfg.te_coeff, blend_steps=cfg.get("blend_steps", 5))
+    request_period = int(cfg.get("request_period", 0))
+    logger.info(f"정책 추론: merger={cfg.merger} · blend_steps={cfg.get('blend_steps', 5)} · "
+                f"request_period={request_period} · full_chunk={cfg.get('full_chunk', False)}")
 
     from collections import deque
     kept = 0
@@ -211,6 +217,7 @@ def collect(cfg: DictConfig):
         if viewer is not None:
             viewer.reset_clock()
         expert, pending, last_action, step = None, None, None, 0
+        last_req = None
         merger.clear()
         frames, f_states, f_ctrl, marks = [], [], [], []
         trig.pop_marks()
@@ -224,11 +231,14 @@ def collect(cfg: DictConfig):
             # ① 끝난 추론을 앵커에 맞춰 제출한다. 늦게 끝났으면 청크 앞부분이 버려질 뿐이다
             if pending is not None and pending[1].done():
                 t_obs, fut = pending
-                merger.submit(t_obs, np.asarray(fut.result()))
+                merger.submit(t_obs - off, np.asarray(fut.result()))
                 pending = None
-            # ② 요청이 비어 있으면 즉시 다음 것을 던진다 (continuous inference)
-            if pending is None and pool is not None and not trig.intervening:
+            # ② 요청이 비어 있으면 즉시 다음 것을 던진다 (continuous inference).
+            #    request_period > 0 이면 직전 요청에서 그만큼 지난 뒤에만 (실물 --request-period)
+            if (pending is None and pool is not None and not trig.intervening
+                    and (request_period <= 0 or last_req is None or step - last_req >= request_period)):
                 pending = (step, pool.submit(predict_fn, list(hist)))
+                last_req = step
 
             if trig.intervening:
                 # 개입 켠 순간 **현재 상태에서** 다시 계획한다 (전문가가 재진입한다)
@@ -256,7 +266,7 @@ def collect(cfg: DictConfig):
                 if action is None and pending is not None:
                     # 콜드 스타트 — 첫 청크는 기다린다 (실물은 자세를 유지하며 기다린다)
                     t_obs, fut = pending
-                    merger.submit(t_obs, np.asarray(fut.result()))
+                    merger.submit(t_obs - off, np.asarray(fut.result()))
                     pending = None
                     action = merger.get_action(step)
                 if action is None:

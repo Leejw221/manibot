@@ -63,7 +63,8 @@ def _progress(env):
 def rollout_episode(env, predict_fn, obs_horizon, action_horizon, max_steps, video_key=None,
                     init_state=None,
                     merger_name="temporal_ensemble", te_coeff=0.01,
-                    async_infer=True, recorder=None, viewer=None, ep_label=""):
+                    async_infer=True, recorder=None, viewer=None, ep_label="",
+                    blend_steps=5, request_period=0):
     """Run one episode. Returns (success, sum_reward, max_reward, steps, frames, progress).
 
     배포(`scripts/collect_intervention.py`)·실물(`manipulation_pipeline`)과 같은 구조다 —
@@ -73,6 +74,9 @@ def rollout_episode(env, predict_fn, obs_horizon, action_horizon, max_steps, vid
     `recorder(action)` 을 주면 매 스텝 `env.step` **직전에** 부른다 — 배포 데이터를
     같이 모으는 경로다(호출자가 env 를 붙잡고 원본 관측을 꺼낸다).
     `viewer` 를 주면 같은 자리에서 창을 갱신한다 (`utils/viewer.SimViewer`).
+    `request_period` > 0 이면 직전 요청에서 그만큼 스텝이 지나야 다음 추론을 요청한다 —
+    실물의 `--request-period` 와 같다. 0 이면 예전 그대로(비동기는 끝나는 즉시 · 동기는
+    예측이 떨어졌을 때만).
     """
     from concurrent.futures import ThreadPoolExecutor
 
@@ -87,32 +91,39 @@ def rollout_episode(env, predict_fn, obs_horizon, action_horizon, max_steps, vid
 
     if viewer is not None:
         viewer.reset_clock()
-    merger = make_merger(merger_name, te_coeff=te_coeff)
+    merger = make_merger(merger_name, te_coeff=te_coeff, blend_steps=blend_steps)
     pool = ThreadPoolExecutor(1) if async_infer else None
+    # 청크 첫 칸이 요청 step 보다 몇 칸 앞인가 (`make_predict_fn(full_chunk=True)` 면 h-1, 아니면 0)
+    off = getattr(predict_fn, "anchor_offset", 0)
     pending = None
+    last_req = None
     last_action = None
     rewards = []
     success = False
     steps = 0
     try:
         while steps < max_steps and not success:
+            due = request_period > 0 and (last_req is None or steps - last_req >= request_period)
             if pool is None:
                 # 동기: 이번 스텝의 예측이 없을 때만 새로 뽑는다 (추론 횟수는 예전과 같다)
-                if merger.get_action(steps) is None:
-                    merger.submit(steps,
+                if merger.get_action(steps) is None or due:
+                    merger.submit(steps - off,
                                   np.asarray(predict_fn(list(history))))
+                    last_req = steps
             else:
                 if pending is not None and pending[1].done():
-                    merger.submit(pending[0],
+                    merger.submit(pending[0] - off,
                                   np.asarray(pending[1].result()))
                     pending = None
-                if pending is None:            # 제출하는 즉시 다음 요청 (continuous inference)
+                # 제출하는 즉시 다음 요청 (continuous inference) — request_period 면 그 주기로
+                if pending is None and (request_period <= 0 or due):
                     pending = (steps, pool.submit(predict_fn, list(history)))
+                    last_req = steps
 
             action = merger.get_action(steps)
             if action is None and pending is not None:
                 # 콜드 스타트 — 첫 청크는 기다린다
-                merger.submit(pending[0], np.asarray(pending[1].result()))
+                merger.submit(pending[0] - off, np.asarray(pending[1].result()))
                 pending = None
                 action = merger.get_action(steps)
             if action is None:
@@ -160,6 +171,8 @@ def eval_policy(
     collector=None,
     viewer=None,
     init_states=None,
+    blend_steps: int = 5,
+    request_period: int = 0,
 ) -> dict:
     """Roll out `n_episodes` and aggregate.
 
@@ -181,6 +194,7 @@ def eval_policy(
             merger_name=merger_name, te_coeff=te_coeff, async_infer=async_infer,
             recorder=collector.record if collector is not None else None,
             viewer=viewer, ep_label=f"ep{ep} ",
+            blend_steps=blend_steps, request_period=request_period,
         )
         if collector is not None:
             collector.finish(ep, success)

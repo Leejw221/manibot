@@ -16,7 +16,9 @@ output_dir: ${base_dir}/outputs/${task.name}/${policy.name}/${session}
 log_dir: ${output_dir}/logs
 checkpoint_dir: ${output_dir}/checkpoints
 init_states: null          # 저장된 시뮬 초기상태 npz. 주면 정책 간 평가가 정확히 짝지어진다
-eval_deterministic: true   # 같은 seed 로 같은 결과. cudnn 비결정성이 폐루프에서 증폭된다
+# true = 같은 seed 로 같은 결과(cudnn 비결정성이 폐루프에서 증폭된다). 대신 추론이 4.2배 느리다
+#   (0.47 s vs 0.11 s [측정 2026-10-03]) — 실시간 비동기에선 그만큼 멈춘다. 기본 false [사용자 2026-10-04].
+eval_deterministic: false
 checkpoint_path: null
 eval_dir: ${output_dir}/eval
 val_dir: ${output_dir}/val
@@ -80,9 +82,22 @@ view: false
 view_res: 384
 view_fps: 20
 
-eval_merger: temporal_ensemble
+# 청크 합치기·요청 주기 — 실물(Cashier_policy-dp eval_real.py)은 offset_blend · 5~6 이다.
+#   offset_blend  마지막 청크의 모양을 쓰고 바뀌는 순간의 위치 차만 blend_steps 동안 지운다
+#   request_period 직전 요청에서 이만큼 지나야 다음 추론을 요청한다. 실물은 5~6 — 추론 지연을
+#                  더하면 새 청크 전에 이전 청크를 8 개쯤 쓴다. 0 = 예전 그대로(비동기는 즉시 ·
+#                  동기는 예측이 떨어졌을 때만)
+# **실물 방식으로 고정** [사용자 2026-10-04] — 8차 비교 세트(temporal_ensemble · 0 · 8칸 · 결정론)는 끝났다.
+#   그 조건은 ~/claude/paired_eval.py 가 계속 고정해 쓴다.
+eval_merger: offset_blend
 eval_te_coeff: 0.01
+eval_blend_steps: 5
+eval_request_period: 6
 eval_async_infer: true
+# true 면 예측 창 16칸을 다 받아 첫 칸을 t-(h-1) 에 앵커한다 — 실물 비동기 경로와 같다 [사용자 2026-10-03].
+#   false = LeRobot 이 자른 8칸(지금 step 부터). 요청 주기 6 에 8칸이면 여유가 2스텝뿐이라 추론을 기다리며
+#   멈추고, offset_blend 의 페이드도 걸리지 않는다 [측정 2026-10-03].
+eval_full_chunk: true
 
 # 평가하면서 롤아웃을 **배포 데이터로 같이 저장**할지 (개입 없음 -> action_mode 전부 0).
 # collect_intervention 과 같은 형식이라 그대로 합칠 수 있다.

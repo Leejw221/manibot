@@ -61,8 +61,16 @@ control_fps: 20
 # 재생 중에 다음 청크를 계산한다 — 실물에는 추론 지연이 원래 있으므로 시뮬도 같게 둔다.
 # 지연은 청크를 **절대 스텝에 앵커**해 흡수한다(늦게 온 청크는 앞부분이 버려질 뿐이다).
 async_infer: true
-# 청크 합치기 — 실물(`manipulation_pipeline`)과 같은 이름·기본값을 쓴다.
+# 청크 합치기 — 실물(Cashier_policy-dp)과 같은 이름을 쓴다.
 #   overwrite         마지막 청크만 쓴다
-#   temporal_ensemble 겹치는 청크들을 ACT 식 지수가중 평균 (실물 기본값)
-merger: temporal_ensemble
+#   temporal_ensemble 겹치는 청크들을 ACT 식 지수가중 평균
+#   offset_blend      마지막 청크의 모양을 쓰고 바뀌는 순간의 위치 차만 blend_steps 동안 지운다
+# request_period: 직전 요청에서 이만큼 지나야 다음 추론을 요청한다 (실물 5~6). 0 = 끝나는 즉시
+# full_chunk: 예측 창 16칸을 다 받아 첫 칸을 t-(h-1) 에 앵커한다(실물 비동기 경로와 같다).
+# **실물 방식으로 고정** [사용자 2026-10-04] — 8차 비교 세트(temporal_ensemble · 0 · 8칸)는 끝났다.
+#   그 세트를 다시 모으려면 merger=temporal_ensemble request_period=0 full_chunk=false 를 명령에 준다.
+merger: offset_blend
 te_coeff: 0.01
+blend_steps: 5
+request_period: 6
+full_chunk: true

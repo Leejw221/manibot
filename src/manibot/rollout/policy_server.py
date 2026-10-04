@@ -26,7 +26,23 @@ import time
 import torch
 
 
-def make_predict_fn(policy, cfg, device, preprocessor=None, postprocessor=None):
+def _lerobot_full_horizon(policy, batch):
+    """LeRobot `predict_action_chunk`(오프라인 분기) + `generate_actions` 에서 마지막 자르기만 뺀 것
+    (modeling_diffusion.py:114-121 · 318-326). 예측 창 전체 Tp 칸을 돌려준다."""
+    from lerobot.utils.constants import OBS_IMAGES, OBS_STATE
+
+    batch = dict(batch)
+    feats = policy.config.image_features
+    if feats:
+        for k in feats:
+            if batch[k].ndim == 4:
+                batch[k] = batch[k].unsqueeze(1)
+        batch[OBS_IMAGES] = torch.stack([batch[k] for k in feats], dim=-4)
+    m = policy.diffusion
+    return m.conditional_sample(batch[OBS_STATE].shape[0], global_cond=m._prepare_global_conditioning(batch))
+
+
+def make_predict_fn(policy, cfg, device, preprocessor=None, postprocessor=None, full_chunk=False):
     """Wrap a policy as the predict_fn PolicyServer takes.
 
     obs_history is a list of raw observation dicts (length obs_horizon). Stacking,
@@ -48,6 +64,11 @@ def make_predict_fn(policy, cfg, device, preprocessor=None, postprocessor=None):
         lead = (관측 창의 마지막 = "지금") - (행동 창의 시작)
     우리 정책은 관측 [0..h-1] · 행동 [0..Tp-1] 이라 lead = h-1 이고, 창 규약을 바꾸는
     정책이 생기면 그 정책이 선언한 값을 그대로 따라간다.
+
+    `full_chunk=True` 면 자르지 않고 예측 창 전체(Tp 칸)를 돌려준다 — 실물 비동기 경로
+    (Cashier_policy-dp `client_manager.py:22-37`)와 같다 [사용자 2026-10-03 "t-1 맞춰서"].
+    첫 칸이 지금보다 `predict_fn.anchor_offset` 칸 앞이므로 호출하는 쪽은
+    `TimedChunk(t_obs=요청 step - anchor_offset, chunk)` 로 붙인다. 자르면 anchor_offset 은 0.
     """
     input_keys = list(cfg.task.image_keys) + [cfg.task.state_key]
     action_key = cfg.task.action_key
@@ -55,6 +76,9 @@ def make_predict_fn(policy, cfg, device, preprocessor=None, postprocessor=None):
     lead = 0
     if not lerobot_style and hasattr(policy, "get_observation_indices"):
         lead = int(policy.get_observation_indices()[-1]) - int(policy.get_action_indices()[0])
+    if full_chunk and lerobot_style:
+        assert hasattr(policy, "diffusion"), "full_chunk 는 LeRobot 계열에선 DiffusionPolicy 만 지원"
+        lead = int(policy.config.n_obs_steps) - 1
 
     def predict_fn(obs_history):
         batch = {
@@ -67,7 +91,8 @@ def make_predict_fn(policy, cfg, device, preprocessor=None, postprocessor=None):
             if lerobot_style:
                 if preprocessor is not None:
                     batch = preprocessor(batch)
-                actions = policy.predict_action_chunk(batch)
+                actions = (_lerobot_full_horizon(policy, batch) if full_chunk
+                           else policy.predict_action_chunk(batch))
                 if postprocessor is not None:
                     actions = postprocessor(actions)
             else:
@@ -75,8 +100,11 @@ def make_predict_fn(policy, cfg, device, preprocessor=None, postprocessor=None):
                 actions = policy.generate_actions(batch)
                 actions = policy.unnormalize_outputs({action_key: actions})[action_key]
         a = actions.squeeze(0).cpu().numpy()
-        return a[lead:] if lead else a              # 첫 칸이 "지금"이 되게 과거분을 버린다
+        if full_chunk or not lead:
+            return a
+        return a[lead:]                             # 첫 칸이 "지금"이 되게 과거분을 버린다
 
+    predict_fn.anchor_offset = lead if full_chunk else 0
     return predict_fn
 
 

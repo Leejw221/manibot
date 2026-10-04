@@ -139,6 +139,11 @@ def evaluate(cfg: DictConfig):
     setup_logging(save_dir=str(eval_dir), log_file="eval.log", debug=cfg.debug)
     logger.info(f"Loaded checkpoint: {checkpoint} (EMA {'적용' if used_ema else '없음'})")
     logger.info(f"결과를 {eval_dir} 에 쓴다")
+    # 넘긴 설정이 적용됐는지 결과에 남긴다 — 예전엔 안 남겨서 "비동기로 쟀다"는 기록이 틀렸다 (mistakes ⑫)
+    eval_settings = {k: cfg.get(k) for k in ("eval_merger", "eval_te_coeff", "eval_blend_steps",
+                                             "eval_request_period", "eval_full_chunk", "eval_async_infer",
+                                             "eval_deterministic", "view", "view_fps", "init_states")}
+    logger.info(f"평가 설정: {eval_settings}")
 
     policy.eval()
     env = make_eval_env(cfg.task)
@@ -168,7 +173,8 @@ def evaluate(cfg: DictConfig):
         info = eval_policy(
             env,
             make_predict_fn(policy, cfg, cfg.device,
-                            preprocessor=preprocessor, postprocessor=postprocessor),
+                            preprocessor=preprocessor, postprocessor=postprocessor,
+                            full_chunk=cfg.get("eval_full_chunk", False)),
             cfg.val.eval_n_episodes,
             obs_horizon=cfg.policy.obs_horizon,
             action_horizon=cfg.policy.action_horizon,
@@ -181,6 +187,7 @@ def evaluate(cfg: DictConfig):
             # ⭐ 배포·실물과 같은 조건으로 잰다 (`utils/eval.py:rollout_episode` 참조)
             merger_name=cfg.eval_merger, te_coeff=cfg.eval_te_coeff,
             async_infer=cfg.eval_async_infer,
+            blend_steps=cfg.eval_blend_steps, request_period=cfg.eval_request_period,
             collector=collector, viewer=viewer,
         )
     finally:
@@ -196,7 +203,7 @@ def evaluate(cfg: DictConfig):
     sampler = OmegaConf.to_container(cfg.policy.noise_scheduler, resolve=True)
     out = eval_dir / "eval_result.json"
     out.parent.mkdir(parents=True, exist_ok=True)
-    json.dump({"checkpoint": str(checkpoint),
+    json.dump({"checkpoint": str(checkpoint), "eval_settings": eval_settings,
                "config": OmegaConf.to_container(cfg.task, resolve=True),
                "sampler": sampler, "n_episodes": cfg.val.eval_n_episodes,
                "use_ema": bool(used_ema), "seed": cfg.seed,
