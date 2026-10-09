@@ -42,9 +42,43 @@ import torch
 
 from manibot.policies.diffusion_ops import prepare_cond, unet_out
 
-__all__ = ["SiriusLoss", "LABELS"]
+__all__ = ["SiriusLoss", "LABELS", "frame_labels", "action_windows"]
 
 LABELS = {"demo": -1, "robot": 0, "intv": 1, "preintv": -10}
+
+
+def frame_labels(dataset_root, n_demo, use_preintv=True):
+    """(프레임 라벨 (F,), 에피소드 번호 (F,)). 앞 n_demo 에피소드는 demo, 나머지는 action_mode
+    (0 robot · 1 intv) 에 개입 시작 직전 15 프레임을 preintv 로 덧씌운다."""
+    import zarr
+
+    from manibot.utils.intervention_labels import LABEL_PREINTV, relabel_preintv
+    z = zarr.open(str(dataset_root), "r")["data"]
+    ep = np.asarray(z["episode_index"]).ravel()
+    mode = np.asarray(z["action_mode"]).ravel()
+    fl = np.empty(len(ep), dtype=np.int64)
+    for e in np.unique(ep):
+        s = ep == e
+        if e < n_demo:
+            fl[s] = LABELS["demo"]
+            continue
+        # 0·1 밖의 값은 relabel_preintv 의 LABEL_PREINTV(2)와 섞이거나 LABELS 에 없는 클래스가 된다
+        if not np.isin(mode[s], (0, 1)).all():
+            raise ValueError(f"에피소드 {e} 의 action_mode 에 0·1 밖의 값: {np.unique(mode[s]).tolist()}")
+        if not use_preintv:
+            fl[s] = mode[s]
+        else:
+            m = relabel_preintv(mode[s], k=15)   # fixed_preintv_length
+            fl[s] = np.where(m == LABEL_PREINTV, LABELS["preintv"], m)
+    return fl, ep
+
+
+def action_windows(dataset, ep):
+    """(N, H) 샘플 i 의 액션 창 프레임 인덱스.  데이터셋의 _get_query_indices 를 그대로 쓴다
+    (precompute_apo_labels 와 같은 이유 — 직접 재현하면 어긋난다)."""
+    from lerobot.utils.constants import ACTION
+    return np.stack([np.asarray(dataset._get_query_indices(i, int(ep[i]))[0][ACTION])
+                     for i in range(len(dataset))])
 
 
 class SiriusLoss:

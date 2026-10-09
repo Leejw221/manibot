@@ -132,7 +132,7 @@ wandb:
 # enabled=false 면 기존 학습 경로가 **한 글자도 안 바뀐다**.
 finetune:
   enabled: false
-  loss: apo                 # apo | bc(가중 없는 대조군) | wbc(가중 BC) | sirius(SIRIUS 공개 코드)
+  loss: apo                 # apo | bc(가중 없는 대조군) | wbc(가중 BC) | sirius(SIRIUS 공개 코드) | sample_weight(샘플별 고정 가중)
   ref_checkpoint: null      # pi_ref.  반드시 지정
   theta_init: null          # pi_theta 시작점. null 이면 ref_checkpoint (APO 원문 기본)
   labels: null              # precompute_apo_labels 의 npz (S, has_intv)
@@ -150,11 +150,13 @@ finetune:
                                 #              false = 나누지 않는다 (SIRIUS 원문 normalize=false)
   sirius_p_star_robot: null     # loss=sirius. 주면 rollout 의 목표 몫 P*(robot) 을 이 값으로 고정한다
                                 # (null = 원문대로 나머지 몫 1 - P*(intv) - P(demo) - P*(preintv))
-  sirius_drop_preintv_min: null # loss=sirius. k 를 주면 행동 창 16칸 중 preintv 가 k 칸 이상인 샘플을
+  sirius_drop_preintv_min: null # loss=sirius·sample_weight. k 를 주면 행동 창 16칸 중 preintv 가 k 칸 이상인 샘플을
                                 # 배치에 아예 넣지 않는다 (과반 = 9). 가중(P)은 전체 데이터 기준 그대로
+                                # sample_weight 는 16칸이 아니라 판정 칸(t..t+14 중 에피소드 안)에서 센다
   sirius_chunk_label: first     # loss=sirius. first = 첫 칸 라벨로 센다(8차까지) · majority = 16칸 과반
                                 # (동률이면 preintv 아닌 쪽), 청크 하나에 가중 하나. majority 는 +policy.drop_n_last_frames=0
   sirius_p_star_auto: null      # loss=sirius. 주면 robot+preintv 를 한 클래스로 합쳐 목표 몫을 이 값으로 (④ 재학습)
+  sample_weights: null          # loss=sample_weight. build_sample_weights 의 npz (샘플별 w · drop) — 직전 라운드 정책의 재현 L1 로 만든 가중
   load_optimizer: null          # 체크포인트 경로를 주면 **optimizer 상태(m·v)만** 이어받는다.
                                 # 스케줄러·step 은 새로 시작하므로 resume 과 다르다.
                                 # 공개 코드는 fine-tuning 때 전부 새로 만들지만 이유가 적혀 있지 않고,

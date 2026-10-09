@@ -159,7 +159,11 @@ def create_dataloader(dataset, cfg: DictConfig, is_training=True):
             "drop_n_last_frames",
             cfg.network.pred_horizon - cfg.network.action_horizon - cfg.network.obs_horizon + 1
         )
-    if drop_n_last_frames > 0:
+    ft = cfg.get("finetune", None)
+    # 샘플을 골라 빼려면(sirius_drop_preintv_min, train.py) indices 를 가진 샘플러가 있어야 한다 —
+    # drop_n_last_frames=0 이면 DataLoader 가 만드는 RandomSampler 라 고를 수 없다
+    pick = is_training and ft is not None and bool(ft.get("sirius_drop_preintv_min"))
+    if drop_n_last_frames > 0 or pick:
         shuffle = False
         sampler = EpisodeAwareSampler(
             dataset.episode_data_index,
@@ -176,7 +180,6 @@ def create_dataloader(dataset, cfg: DictConfig, is_training=True):
     # APO balanced sampling — 매 배치를 정확히 correct/intervention/pre-intv 로 채운다.
     # 기댓값(WeightedRandomSampler)이 아니라 개수로 맞추는 이유: w_i 와 z_0 를 배치 안에서
     # 계산하므로 구성이 흔들리면 그 통계가 같이 흔들린다.
-    ft = cfg.get("finetune", None)
     # balanced 를 null 로 두면 **데이터 분포 그대로** 뽑는다 — SIRIUS 의 방식이다
     # ("Sample mini-batch (s,a,c) ~ D" 후 w=P*(c)/P(c) 로만 재조정) [원문 직접 2026-09-28].
     # 손실의 가중은 그대로 살아 있으므로 "재가중을 한 번만 한다" 가 된다.

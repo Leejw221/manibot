@@ -76,32 +76,13 @@ def _build_finetune_loss(cfg, network, dataset=None):
     # APO 의 청크 점수(labels npz 의 S)는 쓰지 않는다 — 판정 단위가 달라 클래스 비율이 바뀐다.
     # 원문에 없는 두 장치(balanced 배치 · n_t 다중 추첨)는 여기서 막는다.
     if ft.loss == "sirius":
-        import numpy as np
-        import zarr
-        from lerobot.utils.constants import ACTION
-
-        from manibot.losses.sirius import LABELS, SiriusLoss
-        from manibot.utils.intervention_labels import LABEL_PREINTV, relabel_preintv
+        from manibot.losses.sirius import LABELS, SiriusLoss, action_windows, frame_labels
         assert not ft.get("balanced"), "sirius 는 자연 분포 — finetune.balanced=null 로"
         assert ft.get("n_demo_episodes"), "sirius 는 finetune.n_demo_episodes 가 필요하다"
         n_demo = int(ft.n_demo_episodes)
         use_preintv = bool(ft.get("sirius_preintv", True))
-        z = zarr.open(str(cfg.task.dataset_root), "r")["data"]
-        ep = np.asarray(z["episode_index"]).ravel()
-        mode = np.asarray(z["action_mode"]).ravel()
-        fl = np.empty(len(ep), dtype=np.int64)
-        for e in np.unique(ep):
-            s = ep == e
-            if e < n_demo:
-                fl[s] = LABELS["demo"]
-            elif not use_preintv:
-                fl[s] = mode[s]
-            else:
-                m = relabel_preintv(mode[s], k=15)   # fixed_preintv_length
-                fl[s] = np.where(m == LABEL_PREINTV, LABELS["preintv"], m)
-        # 액션 창은 데이터셋의 _get_query_indices 를 그대로 쓴다 (precompute_apo_labels 와 같은 이유)
-        act_idx = np.stack([np.asarray(dataset._get_query_indices(i, int(ep[i]))[0][ACTION])
-                            for i in range(len(dataset))])
+        fl, ep = frame_labels(cfg.task.dataset_root, n_demo, use_preintv)
+        act_idx = action_windows(dataset, ep)
         chunk_label = ft.get("sirius_chunk_label", "first")
         if chunk_label == "majority":
             # P 를 학습 샘플로 센다 — 위 act_idx 는 데이터셋 전체이므로 샘플러도 전체여야 같다
@@ -117,6 +98,29 @@ def _build_finetune_loss(cfg, network, dataset=None):
         logger.info(f"SIRIUS 가중 (클래스={chunk_label})  " + "  ".join(
             f"{c}: n={loss_fn.n[c]} P={loss_fn.P[c]:.4f} w={loss_fn.w_cls[c]:.3f}"
             for c in LABELS))
+        return loss_fn
+
+    # sample_weight = 샘플마다 고정 가중 (build_sample_weights 의 npz). 가중은 직전 라운드 정책의
+    # 재현 오차에서 오고, 클래스는 PI 샘플을 배치에서 빼는 데만 쓴다 (PolicyTrainer 의 제외 블록).
+    if ft.loss == "sample_weight":
+        from manibot.losses.sample_weight import SampleWeightLoss, judge_slots
+        from manibot.losses.sirius import action_windows, frame_labels
+        # assert 가 아니라 raise — python -O 에서 사라지면 끝 프레임이 빠진 다른 학습이 조용히 돈다
+        if ft.get("balanced"):
+            raise ValueError("sample_weight 는 자연 분포 — finetune.balanced=null 로")
+        if not (ft.get("sample_weights") and ft.get("n_demo_episodes")):
+            raise ValueError("sample_weight 는 finetune.sample_weights · finetune.n_demo_episodes 가 필요하다")
+        if cfg.policy.get("drop_n_last_frames") != 0:
+            raise ValueError("가중이 모든 프레임에 있다 — +policy.drop_n_last_frames=0 과 함께")
+        if not ft.get("sirius_drop_preintv_min"):
+            raise ValueError("PI 샘플은 배치에서 뺀다 — finetune.sirius_drop_preintv_min 을 "
+                             "가중 파일의 drop_preintv_min 과 같게")
+        fl, ep = frame_labels(cfg.task.dataset_root, int(ft.n_demo_episodes))
+        loss_fn = SampleWeightLoss(ft.sample_weights, fl, action_windows(dataset, ep), ep,
+                                   ft.n_demo_episodes, ft.sirius_drop_preintv_min, *judge_slots(dataset, ep))
+        keep = loss_fn.w[~loss_fn.drop]
+        logger.info(f"샘플 가중 <- {ft.sample_weights}  학습 샘플 {len(keep)} · PI 제외 {int(loss_fn.drop.sum())}"
+                    f"  w 평균 {keep.mean():.3f} 범위 [{keep.min():.3f}, {keep.max():.3f}]")
         return loss_fn
 
     # wbc = 가중 BC. SIRIUS 의 구조(가중 모방)에 APO 의 적응 가중을 넣고 undesirable 은
@@ -152,7 +156,7 @@ def _build_finetune_loss(cfg, network, dataset=None):
     from manibot.utils.dataset_utils import create_dataset_stats
     from manibot.utils.task_utils import derive_task_meta
 
-    assert ft.loss == "apo", f"finetune.loss={ft.loss!r} 미지원 (apo | bc | wbc | sirius)"
+    assert ft.loss == "apo", f"finetune.loss={ft.loss!r} 미지원 (apo | bc | wbc | sirius | sample_weight)"
     for k in ("ref_checkpoint", "labels", "t_stats"):
         assert ft.get(k), f"finetune.{k} 를 지정해야 한다"
 
@@ -281,10 +285,20 @@ class PolicyTrainer:
         # 가중(P)은 전체 데이터 기준 그대로 둔다 — 넣지 않는 것 말고는 제외 안 한 run 과 같게.
         k_drop = config.get("finetune", {}).get("sirius_drop_preintv_min")
         if k_drop:
+            from manibot.losses.sample_weight import SampleWeightLoss
             from manibot.losses.sirius import LABELS, SiriusLoss
-            assert isinstance(self.loss_fn, SiriusLoss), "sirius_drop_preintv_min 은 loss=sirius 전용"
+            if not isinstance(self.loss_fn, (SiriusLoss, SampleWeightLoss)):
+                raise ValueError("sirius_drop_preintv_min 은 loss=sirius | sample_weight 전용")
             sampler = train_dataloader.sampler
-            n_pre = (self.loss_fn.lab == LABELS["preintv"]).sum(1)
+            is_pre = self.loss_fn.lab == LABELS["preintv"]
+            # sample_weight 는 판정 칸(t..t+14, 패딩 제외)만 센다 — sirius 는 16칸 그대로 (이전 run 과 같게)
+            if isinstance(self.loss_fn, SampleWeightLoss):
+                is_pre &= self.loss_fn.judge
+            n_pre = is_pre.sum(1)
+            # 가중 파일이 w=0 으로 둔 샘플과 여기서 빼는 샘플이 같아야 남은 샘플의 w 가 파일대로다
+            if (isinstance(self.loss_fn, SampleWeightLoss)
+                    and not np.array_equal(self.loss_fn.drop, n_pre >= k_drop)):
+                raise ValueError("가중 파일의 drop 과 PI 제외 샘플이 다르다 — drop_preintv_min · n_demo_episodes 확인")
             before = len(sampler.indices)
             sampler.indices = [i for i in sampler.indices if n_pre[i] < k_drop]
             logger.info(f"preintv {k_drop}칸 이상 샘플 제외: {before} -> {len(sampler.indices)}")
