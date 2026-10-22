@@ -12,6 +12,7 @@
 결정 경위·사용자 발언은 scripts/train_vip_stg.py docstring 의 "라운드 학습 기록":
 - round_pools: 시연 전부 · 개입 에피소드는 첫 개입부터 · 개입 없는 에피소드 전부. BC·STG 풀이 같다.
 - chunk_rates: 직전 라운드 STG 의 d 로 샘플 행동 창의 진척률(양 끝 / 할인). BC 배치 가중(policies/vip_stg.py)이 쓴다.
+- linear_weights: 진척률을 샘플 가중으로(시연 1 · 개입 max(1,Δ) · robot max(0,Δ)) — 기본 방식(weighting=linear).
 """
 
 import numpy as np
@@ -102,9 +103,19 @@ def chunk_rates(d, episode_data_index, delta, method, gamma):
     return out
 
 
+def linear_weights(rate, kind):
+    """(N,) 라운드 BC 샘플 가중 (weighting=linear, 사용자 10-22). kind: 0 시연 · 1 개입 · 2 robot · -1 제외.
+    시연 1 고정 · 개입 max(1, Δ) · robot max(0, Δ) · 제외 0. 배치로 나누지 않고 손실에서 배치 크기로 평균한다 —
+    그래서 각 샘플의 가중이 함께 뽑힌 샘플과 무관하고, 시연은 늘 비가중 BC 와 같은 1/B 를 받는다."""
+    rate, kind = np.asarray(rate, dtype=np.float64), np.asarray(kind)
+    w = np.where(kind == 0, 1.0, np.where(kind == 1, np.maximum(1.0, rate), np.maximum(0.0, rate)))
+    return np.where(kind < 0, 0.0, w)
+
+
 class JointStgDataset(torch.utils.data.Dataset):
-    def __init__(self, base, stg_idx, labels, num_bins, bc_rate=None, bc_floor=None):
-        """bc_rate·bc_floor: (N,) 라운드 학습의 BC 샘플 진척률과 하한 대상 — 주면 BC 역할 항목에 실어 보낸다."""
+    def __init__(self, base, stg_idx, labels, num_bins, bc_rate=None, bc_floor=None, bc_weight=None):
+        """bc_rate·bc_floor: (N,) 라운드 학습의 BC 샘플 진척률과 하한 대상 (weighting=batch_share).
+        bc_weight: (N,) 미리 계산한 BC 샘플 가중 (weighting=linear). 주면 BC 역할 항목에 실어 보낸다."""
         self.base = base
         self.n = len(base)
         self._stg_set = set(np.asarray(stg_idx).tolist())
@@ -114,6 +125,10 @@ class JointStgDataset(torch.utils.data.Dataset):
         self.bc_rate, self.bc_floor = bc_rate, bc_floor
         if bc_rate is not None and not (len(bc_rate) == len(bc_floor) == self.n and np.isfinite(bc_rate).all()):
             raise ValueError("bc_rate·bc_floor 는 프레임 수만큼의 유한한 값이어야 한다")
+        self.bc_weight = bc_weight
+        if bc_weight is not None and not (len(bc_weight) == self.n and np.isfinite(bc_weight).all()
+                                          and (np.asarray(bc_weight) >= 0).all()):
+            raise ValueError("bc_weight 는 프레임 수만큼의 유한한 0 이상 값이어야 한다")
 
     @property
     def num_frames(self):
@@ -135,6 +150,8 @@ class JointStgDataset(torch.utils.data.Dataset):
         if self.bc_rate is not None:
             item["bc_rate"] = torch.tensor(float(self.bc_rate[frame]), dtype=torch.float32)
             item["bc_floor"] = torch.tensor(bool(self.bc_floor[frame]))
+        if self.bc_weight is not None:
+            item["bc_weight"] = torch.tensor(float(self.bc_weight[frame]), dtype=torch.float32)
         return item
 
 

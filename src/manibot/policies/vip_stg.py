@@ -7,7 +7,8 @@
 - 특징 표준화: 카메라별로 차원별 평균, 크기는 차원별 표준편차의 RMS 스칼라 하나(원본 _camera_stats — 차원별로
   나누면 거의 상수인 차원이 미세조정 중 수천 배로 커져 STG 손실이 폭주했다).
 - stg_head: global_cond -> num_bins 선형층 하나(bias 없음). 손실 = BC + stg_weight * CE, 행은 bc_mask/stg_mask 로 가른다.
-  라운드 학습(배치에 bc_rate 가 있을 때)은 BC 를 batch_shares 로 샘플 가중한다. CE 는 가중하지 않는다(계획 결정 8).
+  라운드 학습은 BC 를 샘플 가중한다 — 배치에 bc_weight 가 있으면 (1/B)Σ w·l (기본, weighting=linear),
+  bc_rate 가 있으면 batch_shares 의 배치 몫((가), weighting=batch_share). CE 는 가중하지 않는다(계획 결정 8).
 원본과 다른 것: UNet·노이즈 스케줄러·BC 손실·정규화 전처리는 기존 base 와 같은 LeRobot DiffusionPolicy 그대로다
 (이미지는 전처리기가 ImageNet 으로 이미 정규화해 들어온다 — 채널별 선형 정규화와 bilinear 보간은 순서를 바꿔도 같다).
 """
@@ -184,6 +185,13 @@ class VipStgDiffusionPolicy(DiffusionPolicy):
         info = {}
         if not bc.any():
             bc_loss = zero
+        elif "bc_weight" in batch:
+            # weighting=linear: 미리 계산한 샘플 가중을 곱하고 배치 크기로 평균 — 배치 합으로 나누지 않는다(10-22)
+            per = self.diffusion.bc_loss(global_cond[bc], batch[ACTION][bc], batch["action_is_pad"][bc],
+                                         per_sample=True)
+            w = batch["bc_weight"][bc].to(per.dtype)
+            bc_loss = (w * per).mean()
+            info = {"w_mean": float(w.mean()), "w_max_share": float(w.max() / w.sum().clamp_min(1e-8))}
         elif "bc_rate" in batch:
             per = self.diffusion.bc_loss(global_cond[bc], batch[ACTION][bc], batch["action_is_pad"][bc],
                                          per_sample=True)

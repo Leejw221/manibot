@@ -56,4 +56,6 @@ policy:
     stg_scores: null            # score_stg 의 npz — 직전 라운드 모델 STG(EMA)의 프레임별 d (R1 = base, 계획 결정 7)
     rate: two                   # two = 양 끝 (d_{t-1} - d_{t+15}) / 16 · disc = 칸마다 진척의 gamma 할인 평균
     gamma: 0.9                  # rate=disc 전용
+    weighting: linear           # linear = 시연 1 · 개입 max(1,Δ) · robot max(0,Δ) 를 곱해 배치 크기로 평균 (10-22 결정)
+                                # batch_share = (가) 배치 몫 max(0,Δ)/Σ, 시연·개입 하한 1/B (비교 실험용)
     n_demo_episodes: 50         # 데이터 앞쪽 시연 에피소드 수 — 시연은 merge_zarr 가 action_mode 를 robot 으로 채워 라벨로 못 가른다

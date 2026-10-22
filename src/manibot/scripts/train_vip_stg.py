@@ -20,10 +20,22 @@ train.py 의 PolicyTrainer 를 그대로 쓰고 두 가지만 덧붙인다(train
 
 라운드 학습 기록 (2026-10-22 사용자·희민 결정. 정본 = 노션 계획 페이지
 https://app.notion.com/p/400bd012de0081159d75c0a54b2b0f2a 의 결정 목록 — 코드의 "결정 N" 은 그 번호)
-- 가중: 시연·개입 = max(1, 진척률), 성공한 무개입 robot = 진척률 그대로(음수는 0, 하한 없음). 사용자: "1.0은 일반
-  비가중치처럼 학습하는걸 얘기하는거야 최소한 그정도는 학습하자는거지". 이것을 배치 64 안의 몫으로 옮긴 것이
-  batch_shares(policies/vip_stg.py) — 몫 = v/sum(v), 시연·개입은 몫 하한 1/64, 다시 나누지 않는다(사용자 "(가) 방식").
-  이전 결정 5(robot 진척률 < 1 이면 버림)를 대신한다 — robot 도 버리지 않고 진척률만큼 배운다.
+- 가중(처음 정의): 시연·개입 = max(1, 진척률), 성공한 무개입 robot = 진척률 그대로(음수는 0, 하한 없음). 사용자:
+  "1.0은 일반 비가중치처럼 학습하는걸 얘기하는거야 최소한 그정도는 학습하자는거지". 이전 결정 5(robot 진척률 < 1 이면
+  버림)를 대신한다 — robot 도 버리지 않고 진척률만큼 배운다.
+- 가중을 손실에 넣는 방식 (10-22 밤 확정, weighting=linear 기본): 시연 1 고정 · 개입 max(1, Δ) · robot max(0, Δ) 를
+  전체 샘플에 미리 계산해 곱하고 배치 크기로 평균한다 — 배치 합으로 나누지 않는다, 가중 상한 없음, grad clip 1.0 유지.
+  · 시연 고정 — 사용자: "시연은 고정이 맞는거 같아. 어차피 샘플 개수의 비례해서 학습 step이 증가하면 이전과 비슷한
+    정도로 demo는 볼테니까." (스텝이 샘플 수 비례라 시연 샘플당 노출 ≈ 450 회로 base 와 같다)
+  · 배치 정규화 안 함 — 처음 구현한 (가)(batch_shares: 몫 = max(0,Δ)/배치 합, 시연·개입 하한 1/64)는 같은 샘플의
+    가중이 함께 뽑힌 샘플에 따라 달라지고(기준이 Δ=1 이 아니라 배치 평균), 배치 안 가중 변동(유효 표본 수
+    (Σw)²/Σw²)은 합으로 나눠도 그대로라 안정성 이득이 없다. 기존 연구 다수(AWR·CRR·IQL·SIRIUS 공식 코드·DPPO
+    diffusion AWR)도 배치 크기 평균이다 — 조사: https://app.notion.com/p/401bd012de008170845dccbfb6194c99
+    (가)는 weighting=batch_share 로 남겨 비교 실험 목록에 둔다(사용자: "비교 실험할 목록이라고 생각하고").
+  · 가중 상한 없음 — 사용자: "clip없이 진행해보자". 가중이 Δ 에 선형이라 exp 처럼 폭발하지 않는다(97% ≤ 3, 최대 약 10).
+  · B(SIRIUS) R1 도 정규화 없이(sirius_normalize=false, SIRIUS 원본) — 결정 20.
+  · 처음 (가)로 돌린 R1 양 끝(vipstg-r1-two-s0)은 28K 에서 중단(10-22 23:4x) — 사용자 "지금 중단하고 우리가 수정한
+    방식으로 다시 돌려주고".
 - 진척률 두 방식을 R1 에서 둘 다 학습해 비교한다(사용자 "할인 방식하고 양끝 방식은 둘이 round 1에서 비교"):
   rate=two 양 끝(결정 4) · rate=disc 행동 칸마다 진척의 0.9 할인 평균(희민의 할인 반환을 청크 안으로).
   base STG 로 잰 시연(정답 1) 진척률 표준편차: two 0.50 · disc 0.59 (~/claude/logs/stg_score/summary.json).
@@ -49,6 +61,7 @@ from manibot.datasets.joint_stg import (
     JointBatchSampler,
     JointStgDataset,
     chunk_rates,
+    linear_weights,
     round_pools,
     stg_pool,
     stg_val_episodes,
@@ -68,7 +81,7 @@ from manibot.utils.task_utils import derive_task_meta, is_sim_task, make_eval_en
 
 logger = logging.getLogger(__name__)
 
-STG_KEYS = ("bc_mask", "stg_mask", "stg_label", "bc_rate", "bc_floor")
+STG_KEYS = ("bc_mask", "stg_mask", "stg_label", "bc_rate", "bc_floor", "bc_weight")
 
 
 class VipStgTrainer(PolicyTrainer):
@@ -144,14 +157,19 @@ def round_weights(cfg, base, edi):
     rate = chunk_rates(sc["d"], edi, base.delta_indices[ACTION], vs.rate, vs.gamma)
     ep = np.repeat(np.arange(len(edi["to"])), edi["to"] - edi["from"])
     kind = np.where(~keep, -1, np.where(ep < n_demo, 0, np.where(floor, 1, 2)))   # -1 제외 · 0 시연 · 1 개입 · 2 robot
+    if vs.weighting not in ("linear", "batch_share"):
+        raise ValueError(f"policy.vip_stg.weighting={vs.weighting!r} — linear | batch_share")
+    weight = linear_weights(rate, kind)
     info = {"stg_scores": str(vs.stg_scores), "scored_by": str(sc["checkpoint"]), "rate": str(vs.rate),
-            "gamma": float(vs.gamma), "excluded_frames": int((~keep).sum())}
+            "gamma": float(vs.gamma), "weighting": str(vs.weighting), "excluded_frames": int((~keep).sum())}
     for k, name in enumerate(("demo", "intv", "robot")):
-        r = rate[kind == k]
+        r, w = rate[kind == k], weight[kind == k]
         info[name] = {"n": int(len(r)), "rate_mean": float(r.mean()) if len(r) else None,
-                      "rate_le0": float((r <= 0).mean()) if len(r) else None}
-    np.savez(Path(cfg.log_dir) / "round_weights.npz", rate=rate, keep=keep, floor=floor, kind=kind, d=sc["d"])
-    return {"keep": keep, "floor": floor, "rate": rate, "info": info}
+                      "rate_le0": float((r <= 0).mean()) if len(r) else None,
+                      "w_mean": float(w.mean()) if len(w) else None, "w_max": float(w.max()) if len(w) else None}
+    np.savez(Path(cfg.log_dir) / "round_weights.npz", rate=rate, keep=keep, floor=floor, kind=kind, d=sc["d"],
+             weight=weight)
+    return {"keep": keep, "floor": floor, "rate": rate, "weight": weight, "info": info}
 
 
 def measure_lambda(trainer, steps, every):
@@ -230,8 +248,13 @@ def main(cfg: DictConfig):
     if rnd is not None:
         bc_idx = np.asarray(bc_idx)                      # EpisodeAwareSampler.indices 는 list
         bc_idx, stg_idx = bc_idx[rnd["keep"][bc_idx]], stg_idx[rnd["keep"][stg_idx]]
-    dataset = JointStgDataset(base, stg_idx, labels, vs.num_bins,
-                              *((rnd["rate"], rnd["floor"]) if rnd is not None else ()))
+    if rnd is None:
+        bc_extra = {}
+    elif vs.weighting == "linear":
+        bc_extra = {"bc_weight": rnd["weight"]}
+    else:
+        bc_extra = {"bc_rate": rnd["rate"], "bc_floor": rnd["floor"]}
+    dataset = JointStgDataset(base, stg_idx, labels, vs.num_bins, **bc_extra)
     sampler = JointBatchSampler(bc_idx, stg_idx, len(base), vs.bc_batch, vs.stg_batch, seed=cfg.seed)
     loader = torch.utils.data.DataLoader(dataset, batch_sampler=sampler, num_workers=cfg.train.num_workers,
                                          pin_memory=True, persistent_workers=cfg.train.num_workers > 0)

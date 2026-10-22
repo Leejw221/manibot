@@ -17,6 +17,7 @@ from manibot.datasets.joint_stg import (
     JointBatchSampler,
     JointStgDataset,
     chunk_rates,
+    linear_weights,
     round_pools,
     stg_pool,
     stg_val_episodes,
@@ -134,6 +135,13 @@ def test_batch_shares_equal_user_rule_when_mean_rate_is_one():
     floor = torch.tensor([True, True, False, False])
     share, _ = batch_shares(rate, floor)
     assert (share * 4).tolist() == pytest.approx([2.5, 1.0, 0.6, 0.4])
+
+
+def test_linear_weights_rule():
+    # 시연 1 고정(Δ 무관) · 개입 max(1,Δ) · robot max(0,Δ) · 제외 0 (사용자 10-22)
+    rate = np.array([0.4, 2.5, 0.4, 2.5, -0.7, 0.6, -0.3, 3.0])
+    kind = np.array([0, 0, 1, 1, 1, 2, 2, -1])
+    assert linear_weights(rate, kind).tolist() == pytest.approx([1, 1, 1, 2.5, 1, 0.6, 0, 0])
 
 
 def test_joint_dataset_carries_round_rate():
@@ -255,6 +263,32 @@ def test_round_loss_reduces_to_unweighted_when_shares_are_uniform(built):
     torch.manual_seed(1)
     _, out = policy(batch)
     assert out["share_sum"] == pytest.approx(1.0) and out["floor_hit"] == 0.0
+
+
+def test_linear_weighting_loss_is_batch_mean_of_weighted_samples(built):
+    # weighting=linear: BC 손실 = (1/B) Σ w_i l_i — 가중이 모두 1 이면 기존 경로와 같고, 배치 합으로 나누지 않는다
+    cfg, policy = built
+    policy.train()
+    policy.stg_weight = 0.5
+    batch = _batch(policy, 3, 2)
+    torch.manual_seed(1)
+    base_loss, _ = policy(batch)
+    batch["bc_weight"] = torch.ones(5)
+    torch.manual_seed(1)
+    loss, out = policy(batch)
+    assert float(loss) == pytest.approx(float(base_loss), rel=1e-5)
+    assert out["w_mean"] == pytest.approx(1.0)
+    # 샘플별 손실을 따로 구해 손으로 (1/3)(2·l0 + 0·l1 + 1·l2) 와 맞춘다 (같은 시드 = 같은 노이즈·timestep)
+    batch["bc_weight"] = torch.tensor([2.0, 0.0, 1.0, 9.0, 9.0])     # STG 행(뒤 2개)의 값은 쓰이지 않아야 한다
+    torch.manual_seed(1)
+    _, out = policy(batch)
+    torch.manual_seed(1)
+    sb = policy._stack_images(batch)
+    gc = policy.diffusion._prepare_global_conditioning(sb)
+    bc = batch["bc_mask"]
+    per = policy.diffusion.bc_loss(gc[bc], sb["action"][bc], sb["action_is_pad"][bc], per_sample=True)
+    assert out["bc_loss"] == pytest.approx(float((2 * per[0] + 0 * per[1] + 1 * per[2]) / 3), rel=1e-5)
+    assert out["w_mean"] == pytest.approx(1.0) and out["w_max_share"] == pytest.approx(2 / 3)
 
 
 def test_vip_weights_load_exactly(built):
