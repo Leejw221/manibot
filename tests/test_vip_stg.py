@@ -16,10 +16,13 @@ from hydra import compose, initialize_config_dir
 from manibot.datasets.joint_stg import (
     JointBatchSampler,
     JointStgDataset,
+    chunk_rates,
+    round_pools,
     stg_pool,
     stg_val_episodes,
     steps_to_go,
 )
+from manibot.policies.vip_stg import batch_shares
 
 REPO = Path(__file__).resolve().parents[1]
 CFG_DIR = str(REPO / "src" / "manibot" / "configs")
@@ -68,6 +71,79 @@ def test_joint_dataset_roles_and_labels():
     assert not c["stg_mask"]                                  # 풀 밖 프레임은 STG 역할이어도 손실에 안 들어간다
     assert int(ds[7 + 3]["stg_label"]) == 2                   # 라벨 3 -> num_bins-1 로 자른다
     assert len(ds) == 14
+
+
+DELTA = np.arange(-1, 15)          # 행동 창 t-1..t+14 (create_dataset 의 LeRobot 규약)
+
+
+def test_chunk_rates_with_perfect_stg():
+    # STG 가 정확하면(d = 남은 스텝) 창이 에피소드 안에선 1, 끝 구간은 (R+1)/16 (결정 4), 첫 샘플은 t-1 패딩으로 15/16
+    edi = {"from": np.array([0]), "to": np.array([40])}
+    d = steps_to_go(edi).astype(float)
+    two = chunk_rates(d, edi, DELTA, "two", 0.9)
+    R = 39 - np.arange(40)
+    assert two[0] == pytest.approx(15 / 16)
+    assert np.allclose(two[1:25], 1.0)                        # R >= 15
+    assert np.allclose(two[R <= 14], (R[R <= 14] + 1) / 16)
+    assert np.allclose(chunk_rates(d, edi, DELTA, "disc", 1.0), two)   # gamma = 1 이면 두 방식이 같다
+
+
+def test_chunk_rates_discount_weights_each_step():
+    # 창 안 k 번째 행동에서만 d 가 3 떨어지면 two = 3/16, disc = 0.9^k * 3 / sum 0.9^j
+    edi = {"from": np.array([0]), "to": np.array([60])}
+    d = np.where(np.arange(60) <= 25, 50.0, 47.0)             # 프레임 25 -> 26 행동에서 3 감소
+    t = 20                                                    # 창 첫 행동 = 프레임 19 -> k = 25 - 19 = 6
+    g = 0.9 ** np.arange(16)
+    assert chunk_rates(d, edi, DELTA, "two", 0.9)[t] == pytest.approx(3 / 16)
+    assert chunk_rates(d, edi, DELTA, "disc", 0.9)[t] == pytest.approx(g[6] * 3 / g.sum())
+    # 에피소드 경계를 넘어 다음 에피소드의 d 를 읽지 않는다
+    edi2 = {"from": np.array([0, 30]), "to": np.array([30, 60])}
+    assert chunk_rates(d, edi2, DELTA, "two", 0.9)[29] == pytest.approx(0.0)
+    with pytest.raises(ValueError):
+        chunk_rates(d, edi, DELTA, "both", 0.9)
+
+
+def test_round_pools_rules():
+    # 시연 1 · 개입 에피소드(robot 3 -> 개입 3) · 무개입 robot 1
+    edi = {"from": np.array([0, 4, 10]), "to": np.array([4, 10, 14])}
+    mode = np.array([0] * 4 + [0, 0, 0, 1, 1, 1] + [0] * 4)
+    keep, floor = round_pools(edi, mode, n_demo=1)
+    assert keep.tolist() == [1] * 4 + [0, 0, 0, 1, 1, 1] + [1] * 4
+    assert floor.tolist() == [1] * 4 + [0, 0, 0, 1, 1, 1] + [0] * 4
+    with pytest.raises(ValueError):                           # 개입 뒤 robot 복귀 (결정 6: 멈춘다)
+        round_pools(edi, np.array([0] * 4 + [0, 1, 1, 0, 1, 1] + [0] * 4), n_demo=1)
+    with pytest.raises(ValueError):                           # 시연 수를 잘못 주면 개입 에피소드가 시연이 된다
+        round_pools(edi, mode, n_demo=2)
+    with pytest.raises(ValueError):                           # 개입 직전 라벨(2) 등 규칙 없는 라벨
+        round_pools(edi, np.where(np.arange(14) == 6, 2, mode), n_demo=1)
+
+
+def test_batch_shares_floor_without_renormalizing():
+    share, info = batch_shares(torch.tensor([2.0, 1.0, 0.5, -1.0]), torch.tensor([True, False, True, False]))
+    # v = [2, 1, 0.5, 0] / 3.5 -> 시연·개입 몫 하한 1/4, robot 음수 -> 0, 다시 나누지 않는다
+    assert share.tolist() == pytest.approx([2 / 3.5, 1 / 3.5, 0.25, 0.0])
+    assert info["share_sum"] == pytest.approx(2 / 3.5 + 1 / 3.5 + 0.25)
+    assert info["floor_hit"] == pytest.approx(0.5)
+    s, _ = batch_shares(torch.full((8,), 0.7), torch.ones(8, dtype=torch.bool))
+    assert torch.allclose(s, torch.full((8,), 1 / 8))          # 모두 같으면 가중 없는 평균과 같다
+
+
+def test_batch_shares_equal_user_rule_when_mean_rate_is_one():
+    # 배치 평균 진척률이 1 이면(합 = B) 몫 x B 가 사용자 규칙 그대로: 시연·개입 max(1, Δ) · robot Δ (10-22)
+    rate = torch.tensor([2.5, 0.5, 0.6, 0.4])                 # 합 4 = B
+    floor = torch.tensor([True, True, False, False])
+    share, _ = batch_shares(rate, floor)
+    assert (share * 4).tolist() == pytest.approx([2.5, 1.0, 0.6, 0.4])
+
+
+def test_joint_dataset_carries_round_rate():
+    rate, floor = np.linspace(0, 1, 7), np.arange(7) % 2 == 0
+    ds = JointStgDataset(_Fake(), stg_idx=[0, 1], labels=steps_to_go(EDI), num_bins=8, bc_rate=rate, bc_floor=floor)
+    item = ds[3]
+    assert float(item["bc_rate"]) == pytest.approx(0.5) and not bool(item["bc_floor"])
+    assert "bc_rate" not in JointStgDataset(_Fake(), [0], steps_to_go(EDI), 8)[3]   # base 는 그대로
+    with pytest.raises(ValueError):
+        JointStgDataset(_Fake(), [0], steps_to_go(EDI), 8, bc_rate=np.full(7, np.nan), bc_floor=floor)
 
 
 def test_normalize_then_resize_equals_resize_then_normalize():
@@ -157,6 +233,28 @@ def test_joint_loss_routes_rows_and_gradients(built):
     loss.backward()
     g = policy.diffusion.stg_head.weight.grad
     assert g is None or float(g.abs().sum()) == 0.0
+
+
+def test_round_loss_reduces_to_unweighted_when_shares_are_uniform(built):
+    # 진척률이 모두 같고 전부 하한 대상이면 몫 = 1/B — 가중 경로의 손실이 기존 경로와 같아야 한다(같은 노이즈)
+    cfg, policy = built
+    policy.train()
+    policy.stg_weight = 0.5
+    batch = _batch(policy, 3, 2)
+    torch.manual_seed(1)
+    base_loss, base_out = policy(batch)
+    batch["bc_rate"] = torch.full((5,), 0.3)
+    batch["bc_floor"] = torch.ones(5, dtype=torch.bool)
+    torch.manual_seed(1)
+    loss, out = policy(batch)
+    assert float(loss) == pytest.approx(float(base_loss), rel=1e-5)
+    assert out["share_sum"] == pytest.approx(1.0) and "share_sum" not in base_out
+    # robot 하나(floor=False)의 진척률이 0 이면 그 샘플은 손실에 안 들어간다
+    batch["bc_rate"] = torch.tensor([1.0, 1.0, 0.0, 0.3, 0.3])
+    batch["bc_floor"] = torch.tensor([True, True, False, True, True])
+    torch.manual_seed(1)
+    _, out = policy(batch)
+    assert out["share_sum"] == pytest.approx(1.0) and out["floor_hit"] == 0.0
 
 
 def test_vip_weights_load_exactly(built):

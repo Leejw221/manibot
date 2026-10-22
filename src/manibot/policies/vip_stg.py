@@ -7,6 +7,7 @@
 - 특징 표준화: 카메라별로 차원별 평균, 크기는 차원별 표준편차의 RMS 스칼라 하나(원본 _camera_stats — 차원별로
   나누면 거의 상수인 차원이 미세조정 중 수천 배로 커져 STG 손실이 폭주했다).
 - stg_head: global_cond -> num_bins 선형층 하나(bias 없음). 손실 = BC + stg_weight * CE, 행은 bc_mask/stg_mask 로 가른다.
+  라운드 학습(배치에 bc_rate 가 있을 때)은 BC 를 batch_shares 로 샘플 가중한다. CE 는 가중하지 않는다(계획 결정 8).
 원본과 다른 것: UNet·노이즈 스케줄러·BC 손실·정규화 전처리는 기존 base 와 같은 LeRobot DiffusionPolicy 그대로다
 (이미지는 전처리기가 ImageNet 으로 이미 정규화해 들어온다 — 채널별 선형 정규화와 bilinear 보간은 순서를 바꿔도 같다).
 """
@@ -27,6 +28,20 @@ from lerobot.policies.pretrained import PreTrainedPolicy
 from lerobot.utils.constants import ACTION, OBS_IMAGES, OBS_STATE
 
 VIP_DIM = 1024
+
+
+def batch_shares(rate, floor):
+    """라운드 BC 의 배치 몫 (B,) — 사용자 10-22 (가) 방식. v = max(0, rate), 몫 = v / sum(v).
+    시연·개입(floor)은 몫이 1/B 아래로 내려가지 않게 올리고, 다시 나누지 않는다 — 하한이 걸린 만큼 몫의 합이
+    1 을 넘는다. 1/B 는 가중 없는 BC(배치 평균)에서 샘플 하나가 받는 몫이다 = "최소한 비가중만큼은 배운다".
+    robot 은 하한 없이 진척률대로(음수는 0). 결정 경위(2026-10-22)는 scripts/train_vip_stg.py docstring 의 기록."""
+    v = rate.float().clamp_min(0)
+    raw = v / v.sum().clamp_min(1e-8)
+    floor = floor.bool()
+    share = torch.where(floor, raw.clamp_min(1.0 / len(raw)), raw)
+    hit = floor & (raw < 1.0 / len(raw))
+    return share, {"share_sum": float(share.sum()),
+                   "floor_hit": float(hit.sum() / floor.sum().clamp_min(1))}
 
 
 class VipEncoder(nn.Module):
@@ -116,8 +131,9 @@ class VipStgDiffusionModel(DiffusionModel):
             feats.append(self.rgb_encoder(x, cam).reshape(b, s, -1))
         return torch.cat(feats, dim=-1).flatten(start_dim=1)
 
-    def bc_loss(self, global_cond, action, action_is_pad):
-        """DiffusionModel.compute_loss 와 같은 계산을 이미 만든 global_cond 로 한다(인코더를 STG 와 한 번만 돈다)."""
+    def bc_loss(self, global_cond, action, action_is_pad, per_sample=False):
+        """DiffusionModel.compute_loss 와 같은 계산을 이미 만든 global_cond 로 한다(인코더를 STG 와 한 번만 돈다).
+        per_sample=True 면 (B,) 샘플별 손실 — 가중 없이 평균하면 기본값과 같다(패딩 마스크가 없을 때)."""
         eps = torch.randn(action.shape, device=action.device)
         timesteps = torch.randint(0, self.noise_scheduler.config.num_train_timesteps, (action.shape[0],),
                                   device=action.device).long()
@@ -129,6 +145,11 @@ class VipStgDiffusionModel(DiffusionModel):
         else:
             raise ValueError(f"Unsupported prediction type {self.config.prediction_type}")
         loss = F.mse_loss(pred, target, reduction="none")
+        if per_sample:
+            if self.config.do_mask_loss_for_padding:
+                mask = (~action_is_pad).unsqueeze(-1)
+                return (loss * mask).sum((1, 2)) / (mask.sum((1, 2)) * loss.shape[-1]).clamp_min(1)
+            return loss.mean((1, 2))
         if self.config.do_mask_loss_for_padding:
             mask = (~action_is_pad).unsqueeze(-1)
             return (loss * mask).sum() / (mask.sum() * loss.shape[-1]).clamp_min(1)
@@ -160,13 +181,21 @@ class VipStgDiffusionPolicy(DiffusionPolicy):
         global_cond = self.diffusion._prepare_global_conditioning(batch)
         bc, stg = batch["bc_mask"].bool(), batch["stg_mask"].bool()
         zero = global_cond.sum() * 0.0
-        bc_loss = (self.diffusion.bc_loss(global_cond[bc], batch[ACTION][bc], batch["action_is_pad"][bc])
-                   if bc.any() else zero)
+        info = {}
+        if not bc.any():
+            bc_loss = zero
+        elif "bc_rate" in batch:
+            per = self.diffusion.bc_loss(global_cond[bc], batch[ACTION][bc], batch["action_is_pad"][bc],
+                                         per_sample=True)
+            share, info = batch_shares(batch["bc_rate"][bc], batch["bc_floor"][bc])
+            bc_loss = (share.to(per.dtype) * per).sum()
+        else:
+            bc_loss = self.diffusion.bc_loss(global_cond[bc], batch[ACTION][bc], batch["action_is_pad"][bc])
         stg_loss = (F.cross_entropy(self._stg_logits(global_cond[stg]), batch["stg_label"][stg].long())
                     if stg.any() else zero)
         loss = bc_loss + self.stg_weight * stg_loss
         return loss, {"bc_loss": float(bc_loss.detach()), "stg_loss": float(stg_loss.detach()),
-                      "stg_weight": float(self.stg_weight)}
+                      "stg_weight": float(self.stg_weight), **info}
 
     def _stg_logits(self, global_cond):
         # 원본은 헤드를 fp32 로 돌린다(학습기에 autocast 가 없다) — AMP 안에서도 헤드만 fp32 로 계산한다

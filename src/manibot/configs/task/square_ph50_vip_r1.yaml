@@ -1,0 +1,18 @@
+# @package _global_
+
+# **공개 square-ph 50판 — VIP+STG 라운드 1 학습 데이터 (STG 가중 텀프로젝트, 노션 계획 결정 17·18)**
+#
+# 시연   data/square_ph50_zarr                     7,468 프레임 · 50 에피소드 (사람 시연)
+# 배포1  data/square_ph50_vip_deploy_r1_v2_zarr    5,512 프레임 · 35 판 · 개입 2,588 (25 판)
+#        vipstg-base-noval 50K(seed 0, EMA)로 수집 · seed 1001 · 개입 = 궤적 따라가기 전문가(SquareScriptedExpert)
+#        라운드 종료 = 누적 개입 프레임 >= 시연 7,468 x 1/3
+#
+# ⚠ stats 는 시연 것을 그대로 쓴다 (merge_zarr 가 그렇게 둔다).
+
+defaults:
+  - square_ph50
+  - _self_
+
+task:
+  name: square_ph50_vip_r1
+  dataset_root: ${oc.env:MANIBOT_DATASETS_DIR,data}/square_ph50_vip_r1_zarr

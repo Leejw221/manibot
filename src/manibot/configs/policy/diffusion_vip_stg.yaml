@@ -52,3 +52,8 @@ policy:
     warmup_ratio: 0.5           # 전체 스텝의 앞 절반 동안 0 -> weight 선형 (원본: 1060 epoch 중 530)
     measure_lambda: 0           # >0 이면 학습 대신 이 스텝 수만큼 돌며 두 손실의 인코더 그래디언트 크기를 잰다
     measure_every: 10
+    # 라운드 학습 (R1~). stg_scores 를 주면 풀을 라운드 규칙으로 고르고 BC 에 샘플 가중을 곱한다. null = base 그대로
+    stg_scores: null            # score_stg 의 npz — 직전 라운드 모델 STG(EMA)의 프레임별 d (R1 = base, 계획 결정 7)
+    rate: two                   # two = 양 끝 (d_{t-1} - d_{t+15}) / 16 · disc = 칸마다 진척의 gamma 할인 평균
+    gamma: 0.9                  # rate=disc 전용
+    n_demo_episodes: 50         # 데이터 앞쪽 시연 에피소드 수 — 시연은 merge_zarr 가 action_mode 를 robot 으로 채워 라벨로 못 가른다
