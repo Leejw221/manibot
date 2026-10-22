@@ -211,6 +211,9 @@ def make_policy(cfg, dataset_meta, stats):
     """Build (policy, preprocessor, postprocessor) for cfg.policy.name."""
     if cfg.policy.name == "diffusion":
         return _lerobot_diffusion(cfg, dataset_meta, stats)
+    if cfg.policy.name == "diffusion_vip_stg":
+        from manibot.policies.vip_stg import make_vip_stg_policy
+        return make_vip_stg_policy(cfg, dataset_meta, stats)
     # act · cfm still carry their normalization inside the module.
     policy = get_policy_class(cfg.policy.name)(cfg, stats)
     return policy, _identity, _identity

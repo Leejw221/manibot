@@ -1,0 +1,54 @@
+# @package _global_
+
+# 공유 백본(VIP ResNet50) DP + STG 헤드 — policies/vip_stg.py, scripts/train_vip_stg.py 전용.
+# UNet·스케줄러·horizon 은 diffusion.yaml(기존 base)과 같다. 다른 것은 인코더와 vip_stg 블록뿐이다.
+# vip_stg 값은 희민 self-improving-gym configs/policy/diffusion_unet_vip_stg.yaml(2026-10-21 확인)을 따른다.
+train:
+  batch_size: 64
+
+policy:
+  name: diffusion_vip_stg
+  action_horizon: 8
+  pred_horizon: 16
+  obs_horizon: 2
+
+  # _lerobot_diffusion 이 DiffusionConfig 를 만들 때 읽는 값 — ResNet18 인코더는 만들자마자 버린다
+  use_group_norm: true
+  pretrained_backbone_weights: null
+  crop_is_random: true
+  spatial_softmax_num_keypoints: 32
+  use_separate_rgb_encoder_per_camera: true
+
+  noise_scheduler:
+    type: DDIM
+    num_train_timesteps: 100
+    num_inference_steps: 10
+    beta_start: 0.0001
+    beta_end: 0.02
+    beta_schedule: squaredcos_cap_v2
+    prediction_type: epsilon
+    clip_sample: true
+    clip_sample_range: 1.0
+
+  unet:
+    down_dims: [512, 1024, 2048]
+    kernel_size: 5
+    n_groups: 8
+    diffusion_step_embed_dim: 128
+    use_film_scale_modulation: true
+
+  vip_stg:
+    weights: ${base_dir}/data/vip/model.pt    # VIP 공식 resnet50 (pytorch.s3.amazonaws.com/models/rl/vip/model.pt)
+    size: 224
+    frozen_stages: [conv1, bn1, layer1, layer2]   # layer3·layer4·fc 만 미세조정
+    grad_checkpoint: false      # true 면 layer3·layer4 활성값을 역전파 때 재계산(결과 같음, 메모리↓ 시간↑) — 16GB 용
+    encoder_lr_scale: 0.1
+    num_bins: 512
+    bc_batch: 64                # train.batch_size 와 같게 둔다 — BC 쪽 배치는 기존 base 와 같다
+    stg_batch: 64
+    val_fraction: 0.2           # STG 풀에서만 뺀다. BC 는 모든 에피소드
+    split_seed: 0
+    weight: ???                 # lambda 최종값 — measure_lambda 로 재서 정한다
+    warmup_ratio: 0.5           # 전체 스텝의 앞 절반 동안 0 -> weight 선형 (원본: 1060 epoch 중 530)
+    measure_lambda: 0           # >0 이면 학습 대신 이 스텝 수만큼 돌며 두 손실의 인코더 그래디언트 크기를 잰다
+    measure_every: 10
