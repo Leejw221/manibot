@@ -51,8 +51,13 @@ class SimViewer:
         """실시간 재생. show() 뒤 env.step() 전후 어디서 불러도 되지만 한 스텝에 한 번만."""
         if self.fps <= 0:
             return
-        self._t_next = max(self._t_next, time.perf_counter()) + 1.0 / self.fps
-        time.sleep(max(0.0, self._t_next - time.perf_counter()))
+        # 마감을 직전 마감에서 1/fps 씩 민다 — 스텝 일(렌더·step)이 그 안에 포함돼 주기가
+        # max(일, 1/fps) 가 된다. 지금 시각에서 1/fps 를 더하면 주기가 일 + 1/fps 로 늘어난다
+        # (13~15 Hz 로 돌던 원인, 2026-10-22). 이미 늦었으면 지금으로 맞춘다 — 밀린 만큼
+        # 몰아서 빨리 돌리면 사람 눈엔 그쪽이 더 튄다.
+        now = time.perf_counter()
+        self._t_next = max(self._t_next + 1.0 / self.fps, now)
+        time.sleep(self._t_next - now)
 
     def reset_clock(self):
         self._t_next = time.perf_counter()
