@@ -30,7 +30,7 @@ import numpy as np
 from robosuite.utils.transform_utils import axisangle2quat, mat2quat, quat2axisangle, quat2mat
 
 from manibot.envs.ik import frame, roll, rot_z
-from manibot.envs.scripted_expert import ScriptedExpert, fit_T, qeval, quintic
+from manibot.envs.scripted_expert import ScriptedExpert, fit_T, qeval, quintic, rvec
 
 # ── 기하 ────────────────────────────────────────────────────────────────────
 PRE = 0.075         # 손잡이 위 대기 높이 [m].  0.09 에서 낮췄다 — 같은 스텝으로 내려오면
@@ -593,6 +593,20 @@ class SquareExpert:
 HANDLE_MOVED = 0.005    # 집으러 가는 중 손잡이가 이만큼 움직이면 다시 만든다 [m]. 저장된 초기 상태는
                         # 너트가 z 0.89 에 떠 있다가 첫 몇 스텝에 0.83 으로 떨어져 놓인다 [실측 2026-10-03]
 ALIGN_TRIES = 4         # 봉 위 정렬 보정 횟수 상한 — 넘으면 그대로 삽입한다
+# 사람이 고치듯이 [사용자 2026-10-22: "충돌하는 상황도 아닌데, 무조건 올리는건 비효율적" ·
+# "중앙에 맞게 경로를 생성해서 부드럽게 이동하고 멈추면 되는거 아니야?"]
+CLEAR_DZ = 0.035        # eef 가 손잡이 site 보다 이만큼 높으면 옆으로 움직여도 손가락이 너트에 안 걸린다 [m].
+                        # 손끝 = eef 아래 13.5 mm · 너트 윗면 = 손잡이 site 위 10 mm [측정 2026-10-22] + 여유 11.5 mm
+OVER_XY, OVER_ROT = 0.005, np.radians(10.0)   # 이 안이면 이미 손잡이 위에서 자세도 맞다 — 바로 내려간다
+C_V_LIFT = 0.004        # 낮은 곳에서 CLEAR_DZ 까지 들 때 속도 상한 [m/step]. 손가락이 너트에 닿아 있을 때가 많아
+                        # 13 mm/step 으로 들면 너트를 끌었다(241 상태: 3 mm 넘게 더 민 상태 16 -> 6) [측정 2026-10-22]
+T_SMOOTH = 10           # 봉 위 보정 궤적의 최소 길이 [step]. 전에는 fit_T 최소(3 스텝)로 8 mm 를 옮겨 급했다
+RETARGET_EPS, RETARGET_YAW_EPS = 0.001, np.radians(0.5)   # 이보다 작은 끝점 차이는 고치지 않는다
+
+
+def _smoothstep(x):
+    """5차 smoothstep — 양끝 속도·가속도 0. 보정량을 남은 궤적에 나눠 실을 때 쓴다."""
+    return x ** 3 * (10 - 15 * x + 6 * x ** 2)
 
 
 class SquareScriptedExpert(ScriptedExpert):
@@ -606,6 +620,9 @@ class SquareScriptedExpert(ScriptedExpert):
           -> insert -> release -> retreat. 못 잡으면 reopen -> pick.
     [측정 2026-10-04] 배포 때 저장한 개입 시작 상태 87개: 87/87 · 길이 111 (SquareExpert 146) · 포화 39% (26%).
     고정 50 위치 처음부터: 50/50 · 길이 134 · 포화 30% (공개 시연 149 · 11%).
+    [측정 2026-10-22] 지금 높이에서 정렬(_approach) · 봉 위 끝점 계속 고치기(_retarget) 뒤, ph50 배포 세트의 개입
+    시작 상태 241개: 손가락이 너트보다 높을 때 집기 중 올라간 높이 중앙 4.4 -> 0.2 cm · 봉 위 정렬 보정이 필요한
+    상태 88 -> 3 · 성공 239 -> 238 · 길이 112 -> 110. 같은 상태도 실행마다 결과가 갈린다(어려운 6 상태 x 8회: 30 -> 33/48).
     """
 
     def __init__(self, env, jitter=False, **_):
@@ -625,6 +642,8 @@ class SquareScriptedExpert(ScriptedExpert):
 
     def update(self, n):
         g, ph = self.geo, self.phase
+        if ph in ("transport", "align_peg") and not self.motion_done(n) and n - self.rt_n >= C_PERIOD:
+            self._retarget(n)
         if ph == "pick" and not self.motion_done(n) and np.linalg.norm(g._handle() - self.h_plan) > HANDLE_MOVED:
             self._pick(n, cont=n > self.t0)
         elif ph == "pick" and self.motion_done(n):
@@ -666,8 +685,27 @@ class SquareScriptedExpert(ScriptedExpert):
         else:
             (p0, R0), v0 = self.eef(), None
         up = np.array([0.0, 0.0, 1.0])
-        self.set(self.segments(p0, R0, [(grab + up * PRE, R, None), (grab - up * GRASP_DZ, R, None)], -1, v0),
-                 n, "pick")
+        # 경유점마다 멈췄다 간다 — 지나가며 통과 속도를 주면 축마다 5차 보간이 반대로 한 번 넘쳐서
+        # 수직으로 올릴 때 옆으로 흔들리고(너트를 민다) 수평으로 옮길 때 위로 2~3 cm 솟았다 [측정 2026-10-22]
+        traj, p, Rp, v = [], p0, R0, v0
+        for wp in self._approach(p0, R0, grab, R) + [(grab - up * GRASP_DZ, R, None)]:
+            traj += self.segments(p, Rp, [wp], -1, v)
+            p, Rp, v = wp[0], wp[1], None
+        self.set(traj, n, "pick")
+
+    def _approach(self, p0, R0, grab, R):
+        """손잡이 위로 가는 경유점. 손가락이 너트에 걸릴 높이일 때만 올린다.
+
+        CLEAR_DZ 보다 높으면 지금 높이에서 손잡이 위로 옮기며 자세를 맞추고 내려간다(PRE 보다 높으면 PRE 로).
+        낮으면 그 자리에서 CLEAR_DZ 까지만 올린 뒤 옮긴다. 이미 손잡이 바로 위에서 자세도 맞으면 바로 내려간다.
+        """
+        over = np.linalg.norm(p0[:2] - grab[:2]) < OVER_XY and _rot_dist(R, R0) < OVER_ROT
+        if over and p0[2] <= grab[2] + PRE:
+            return []
+        z_clear = grab[2] + CLEAR_DZ
+        if p0[2] >= z_clear:
+            return [(np.r_[grab[:2], min(p0[2], grab[2] + PRE)], R, None)]
+        return [(np.r_[p0[:2], z_clear], R0, C_V_LIFT), (np.r_[grab[:2], z_clear], R, None)]
 
     def _place(self, n):
         g = self.geo
@@ -682,6 +720,36 @@ class SquareScriptedExpert(ScriptedExpert):
         above = np.r_[g._peg()[:2] - o, z]
         self.set(self.cruise(p, Rc, np.r_[p[:2], z], above, rot_z(d) @ Rc, 1), n, "transport")
         self.tries = 0
+        self.rt_n, self.extends = n, 0
+
+    def _retarget(self, n):
+        """남은 궤적의 끝점을 지금 너트 위치로 다시 재고, 차이를 남은 칸에 부드럽게 나눠 싣는다.
+
+        끝점 = 봉 중심 - (남은 손목 회전만큼 돌린 손->너트 오프셋). 너트가 손 안에서 흔들리거나 미끄러진 만큼이
+        도착 전에 고쳐진다. 남은 칸이 T_SMOOTH 보다 적으면 끝을 늘려 급정지를 막는다.
+        """
+        g = self.geo
+        k = max(n - self.t0, 0)
+        rest = self.traj[k:]
+        p, Rc = self.eef()
+        nut, Rn = g._nut()
+        turn = rvec(rest[-1][1] @ Rc.T)[2]
+        dyaw = (self.target_yaw - (_yaw(Rn) + turn) + np.pi) % (2 * np.pi) - np.pi
+        o = rot_z(turn + dyaw)[:2, :2] @ (nut - p)[:2]
+        dp = np.r_[g._peg()[:2] - o - rest[-1][0][:2], 0.0]
+        self.rt_n = n
+        if np.linalg.norm(dp) < RETARGET_EPS and abs(dyaw) < RETARGET_YAW_EPS:
+            return
+        if len(rest) < T_SMOOTH:
+            # 끝을 늘려야 하는 보정은 맞출 가치가 있는 오차일 때만, ALIGN_TRIES 번까지만 — 너트가 봉에 닿아
+            # 오프셋이 계속 변하면 늘리기만 반복해 단계가 끝나지 않았다 [측정 2026-10-22, 241 상태 중 3]
+            if (np.linalg.norm(dp) < XY_TOL / 2 and abs(dyaw) < YAW_TOL / 2) or self.extends >= ALIGN_TRIES:
+                return
+            self.extends += 1
+            rest = rest + [rest[-1]] * (T_SMOOTH - len(rest))
+        L = len(rest)
+        self.traj = self.traj[:k] + [(q + dp * _smoothstep(i / L), rot_z(dyaw * _smoothstep(i / L)) @ R, gr)
+                                     for i, (q, R, gr) in enumerate(rest, 1)]
 
     def _yaw_err(self):
         return (_yaw(self.geo._nut()[1]) - self.target_yaw + np.pi) % (2 * np.pi) - np.pi
@@ -691,10 +759,10 @@ class SquareScriptedExpert(ScriptedExpert):
                 and abs(self._yaw_err()) < YAW_TOL)
 
     def _align(self, n):
-        g = self.geo
+        """도착했는데 남은 오차 — 지금 자세에 머무는 T_SMOOTH 칸을 깔고 _retarget 으로 끝점을 옮긴다."""
         p, Rc = self.eef()
-        tgt = np.r_[p[:2] + (g._peg()[:2] - g._nut()[0][:2]), p[2]]
-        self.set(self.segments(p, Rc, [(tgt, rot_z(-self._yaw_err()) @ Rc, C_V_INS)], 1), n, "align_peg")
+        self.set([(p, Rc, 1.0)] * T_SMOOTH, n, "align_peg")
+        self._retarget(n)
         self.tries += 1
 
     def _insert(self, n):
