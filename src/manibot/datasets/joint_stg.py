@@ -13,6 +13,7 @@
 - round_pools: 시연 전부 · 개입 에피소드는 첫 개입부터 · 개입 없는 에피소드 전부. BC·STG 풀이 같다.
 - chunk_rates: 직전 라운드 STG 의 d 로 샘플 행동 창의 진척률(양 끝 / 할인). BC 배치 가중(policies/vip_stg.py)이 쓴다.
 - linear_weights: 진척률을 샘플 가중으로(시연 1 · 개입 max(1,Δ) · robot max(0,Δ)) — 기본 방식(weighting=linear).
+- sirius_weights: 같은 풀에 SIRIUS 클래스 상수 가중(weighting=sirius, 10-24 결정 22) — 가중 규칙만 바꾼 비교 조건.
 """
 
 import numpy as np
@@ -110,6 +111,22 @@ def linear_weights(rate, kind):
     rate, kind = np.asarray(rate, dtype=np.float64), np.asarray(kind)
     w = np.where(kind == 0, 1.0, np.where(kind == 1, np.maximum(1.0, rate), np.maximum(0.0, rate)))
     return np.where(kind < 0, 0.0, w)
+
+
+def sirius_weights(kind):
+    """(N,) SIRIUS 클래스 상수 가중 (weighting=sirius, 사용자 10-24 — 계획 결정 22). kind: 0 시연 · 1 개입 · 2 robot · -1 제외.
+    같은 공동 학습 시스템 안에서 가중 규칙만 SIRIUS 로 바꾼 비교 조건이라 풀·보조 손실·손실식((1/B)Σ w·l)은 linear 와 같다.
+    w(c) = P*(c) / P(c), P 는 풀(kind >= 0) 안의 비율. 논문 §IV-D 의 P*: 시연 P(demo) · 개입 0.5 · preintv 0 · robot 나머지
+    -> 시연 1 · 개입 0.5/P(intv) · robot max(0, 0.5 - P(demo)) / P(robot). 사용자 10-24: "논문 원문에 충실한 P*(c)=0".
+    공개 코드의 preintv 0.002 항(manibot losses/sirius.py 는 그쪽을 따름)은 우리 풀에 개입 전 프레임이 없어(결정 6) 뺐다 —
+    robot 식에서 0.002 를 빼든 말든 R1 풀에선 P(demo) 0.65 > 0.5 라 robot 이 어차피 0 이다(14차·B v2 와 같은 상황)."""
+    kind = np.asarray(kind)
+    n = np.array([(kind == k).sum() for k in (0, 1, 2)], dtype=np.float64)
+    p = n / n.sum()
+    table = np.array([1.0,
+                      0.5 / p[1] if n[1] else 0.0,
+                      max(0.0, 0.5 - p[0]) / p[2] if n[2] else 0.0])
+    return np.where(kind < 0, 0.0, table[np.clip(kind, 0, 2)])
 
 
 class JointStgDataset(torch.utils.data.Dataset):

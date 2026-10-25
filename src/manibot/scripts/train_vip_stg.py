@@ -44,6 +44,12 @@ https://app.notion.com/p/400bd012de0081159d75c0a54b2b0f2a 의 결정 목록 — 
   느린 구간도 진척률 1 로 읽힌다.
 - 스텝 = BC 샘플 수 / 7,118 x 50K (결정 11). R1(시연 7,468 + 개입 2,588 + robot 1,390 = 11,446) -> 80K.
 - 우선 seed 0 만 (사용자 10-22 "3개 seed 모두 돌리지말고 seed 0에서만").
+- weighting=sirius (10-24, 결정 22 — 결정 1 의 "시스템 대 시스템"을 요인 분리로 다시 엶): 같은 공동 학습 시스템(VIP 공유
+  백본 · STG 보조 손실 λ 그대로 · 같은 풀 · 같은 80K · 같은 seed) 에서 BC 샘플 가중만 SIRIUS 클래스 상수(시연 1 ·
+  개입 0.5/P · robot 나머지, 논문 P*(preintv)=0)로 바꿔 STG 가중과 짝비교한다. 사용자: "우리는 sirius의 시스템에서
+  가중치 산정 방식이 더 좋다는 것을 보이고 싶은거잖아" -> "공동 학습을 한 후 sirius 방식의 가중치도 학습해서 평가" ·
+  보조 손실은 "똑같이 적용해야" (가중 규칙이 아니라 시스템 쪽 요소라 양쪽에 같이 둔다). 규칙은 datasets/joint_stg.py
+  sirius_weights. R1 풀에선 개입 2.211 · robot 0 [손 계산 10-24].
 """
 
 import json
@@ -63,6 +69,7 @@ from manibot.datasets.joint_stg import (
     chunk_rates,
     linear_weights,
     round_pools,
+    sirius_weights,
     stg_pool,
     stg_val_episodes,
     steps_to_go,
@@ -157,9 +164,9 @@ def round_weights(cfg, base, edi):
     rate = chunk_rates(sc["d"], edi, base.delta_indices[ACTION], vs.rate, vs.gamma)
     ep = np.repeat(np.arange(len(edi["to"])), edi["to"] - edi["from"])
     kind = np.where(~keep, -1, np.where(ep < n_demo, 0, np.where(floor, 1, 2)))   # -1 제외 · 0 시연 · 1 개입 · 2 robot
-    if vs.weighting not in ("linear", "batch_share"):
-        raise ValueError(f"policy.vip_stg.weighting={vs.weighting!r} — linear | batch_share")
-    weight = linear_weights(rate, kind)
+    if vs.weighting not in ("linear", "batch_share", "sirius"):
+        raise ValueError(f"policy.vip_stg.weighting={vs.weighting!r} — linear | batch_share | sirius")
+    weight = sirius_weights(kind) if vs.weighting == "sirius" else linear_weights(rate, kind)
     info = {"stg_scores": str(vs.stg_scores), "scored_by": str(sc["checkpoint"]), "rate": str(vs.rate),
             "gamma": float(vs.gamma), "weighting": str(vs.weighting), "excluded_frames": int((~keep).sum())}
     for k, name in enumerate(("demo", "intv", "robot")):
@@ -250,7 +257,7 @@ def main(cfg: DictConfig):
         bc_idx, stg_idx = bc_idx[rnd["keep"][bc_idx]], stg_idx[rnd["keep"][stg_idx]]
     if rnd is None:
         bc_extra = {}
-    elif vs.weighting == "linear":
+    elif vs.weighting in ("linear", "sirius"):      # 둘 다 미리 계산한 샘플 가중을 (1/B)Σ w·l 로
         bc_extra = {"bc_weight": rnd["weight"]}
     else:
         bc_extra = {"bc_rate": rnd["rate"], "bc_floor": rnd["floor"]}

@@ -19,6 +19,7 @@ from manibot.datasets.joint_stg import (
     chunk_rates,
     linear_weights,
     round_pools,
+    sirius_weights,
     stg_pool,
     stg_val_episodes,
     steps_to_go,
@@ -142,6 +143,14 @@ def test_linear_weights_rule():
     rate = np.array([0.4, 2.5, 0.4, 2.5, -0.7, 0.6, -0.3, 3.0])
     kind = np.array([0, 0, 1, 1, 1, 2, 2, -1])
     assert linear_weights(rate, kind).tolist() == pytest.approx([1, 1, 1, 2.5, 1, 0.6, 0, 0])
+
+
+def test_sirius_weights_rule():
+    # w = P*/P: 시연 1 · 개입 0.5/P(intv) · robot (0.5 - P(demo))/P(robot) · preintv 0 (논문 §IV-D) · 제외 0 (사용자 10-24)
+    kind = np.array([-1, 0, 0, 0, 1, 2, 2, 2, 2, 2])          # 풀 9 = 시연 3 · 개입 1 · robot 5
+    assert sirius_weights(kind).tolist() == pytest.approx([0, 1, 1, 1, 4.5, 0.3, 0.3, 0.3, 0.3, 0.3])
+    # 시연이 풀의 절반을 넘으면 robot 몫이 음수 -> 0 (R1 풀의 실제 상황)
+    assert sirius_weights(np.array([0, 0, 0, 1, 2])).tolist() == pytest.approx([1, 1, 1, 2.5, 0])
 
 
 def test_joint_dataset_carries_round_rate():

@@ -58,4 +58,5 @@ policy:
     gamma: 0.9                  # rate=disc 전용
     weighting: linear           # linear = 시연 1 · 개입 max(1,Δ) · robot max(0,Δ) 를 곱해 배치 크기로 평균 (10-22 결정)
                                 # batch_share = (가) 배치 몫 max(0,Δ)/Σ, 시연·개입 하한 1/B (비교 실험용)
+                                # sirius = 같은 풀에 SIRIUS 클래스 상수 가중(시연 1 · 개입 0.5/P · robot 나머지, preintv 0) — 가중 규칙만 바꾼 비교 (10-24 결정 22)
     n_demo_episodes: 50         # 데이터 앞쪽 시연 에피소드 수 — 시연은 merge_zarr 가 action_mode 를 robot 으로 채워 라벨로 못 가른다
