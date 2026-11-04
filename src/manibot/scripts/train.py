@@ -287,10 +287,18 @@ class PolicyTrainer:
         if k_drop:
             from manibot.losses.sample_weight import SampleWeightLoss
             from manibot.losses.sirius import LABELS, SiriusLoss
-            if not isinstance(self.loss_fn, (SiriusLoss, SampleWeightLoss)):
-                raise ValueError("sirius_drop_preintv_min 은 loss=sirius | sample_weight 전용")
+            if self.loss_fn is None:
+                # loss=bc — 가중 없이 PI 청크만 뺀다 (청크 PI 판정 규칙 ablation, 사용자 2026-11-05).
+                # 라벨·16칸 세기는 SiriusLoss.lab 과 같은 함수로 만든다 — 규칙만 같고 가중은 없다.
+                from manibot.losses.sirius import action_windows, frame_labels
+                fl, ep = frame_labels(config.task.dataset_root, int(config.finetune.n_demo_episodes))
+                lab = fl[action_windows(train_dataloader.dataset, ep)]
+            elif isinstance(self.loss_fn, (SiriusLoss, SampleWeightLoss)):
+                lab = self.loss_fn.lab
+            else:
+                raise ValueError("sirius_drop_preintv_min 은 loss=bc | sirius | sample_weight 전용")
             sampler = train_dataloader.sampler
-            is_pre = self.loss_fn.lab == LABELS["preintv"]
+            is_pre = lab == LABELS["preintv"]
             # sample_weight 는 판정 칸(t..t+14, 패딩 제외)만 센다 — sirius 는 16칸 그대로 (이전 run 과 같게)
             if isinstance(self.loss_fn, SampleWeightLoss):
                 is_pre &= self.loss_fn.judge
