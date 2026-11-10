@@ -283,15 +283,25 @@ class PolicyTrainer:
 
         # 행동 창에 preintv 칸이 k 개 이상인 샘플은 배치에 아예 넣지 않는다 (가중 0 과 다르다).
         # 가중(P)은 전체 데이터 기준 그대로 둔다 — 넣지 않는 것 말고는 제외 안 한 run 과 같게.
-        k_drop = config.get("finetune", {}).get("sirius_drop_preintv_min")
-        if k_drop:
+        ft = config.get("finetune", {})
+        k_drop = ft.get("sirius_drop_preintv_min")
+        # 쪽별 문턱 (사용자 2026-11-10, 청크 PI 분석): 개입 칸이 없는 청크(R→PI·전부 PI, 실패로 이어지는 흐름)와
+        # 있는 청크(PI→I, 교정으로 들어가는 흐름)를 따로 뺀다. null 인 쪽은 빼지 않는다 — 한쪽만 바꿔 비교하려고.
+        k_side = (ft.get("sirius_drop_preintv_min_nointv"), ft.get("sirius_drop_preintv_min_intv"))
+        by_side = any(k is not None for k in k_side)
+        preintv_len = int(ft.get("sirius_preintv_len", 15))
+        # 가중 손실의 라벨은 _build_finetune_loss 에서 15 로 만든다 — 길이만 조용히 무시되면 안 된다
+        if preintv_len != 15 and self.loss_fn is not None:
+            raise ValueError("sirius_preintv_len 은 loss=bc 의 PI 제외 전용")
+        if k_drop or by_side:
             from manibot.losses.sample_weight import SampleWeightLoss
             from manibot.losses.sirius import LABELS, SiriusLoss
             if self.loss_fn is None:
                 # loss=bc — 가중 없이 PI 청크만 뺀다 (청크 PI 판정 규칙 ablation, 사용자 2026-11-05).
                 # 라벨·16칸 세기는 SiriusLoss.lab 과 같은 함수로 만든다 — 규칙만 같고 가중은 없다.
                 from manibot.losses.sirius import action_windows, frame_labels
-                fl, ep = frame_labels(config.task.dataset_root, int(config.finetune.n_demo_episodes))
+                fl, ep = frame_labels(config.task.dataset_root, int(config.finetune.n_demo_episodes),
+                                      preintv_len=preintv_len)
                 lab = fl[action_windows(train_dataloader.dataset, ep)]
             elif isinstance(self.loss_fn, (SiriusLoss, SampleWeightLoss)):
                 lab = self.loss_fn.lab
@@ -303,13 +313,37 @@ class PolicyTrainer:
             if isinstance(self.loss_fn, SampleWeightLoss):
                 is_pre &= self.loss_fn.judge
             n_pre = is_pre.sum(1)
+            has_intv = (lab == LABELS["intv"]).any(1)
+            asym = config.finetune.get("sirius_drop_preintv_asym")
+            if by_side:
+                if self.loss_fn is not None or k_drop or asym:
+                    raise ValueError("쪽별 문턱은 loss=bc 전용, sirius_drop_preintv_min·asym 과 함께 쓰지 않는다")
+                drop = np.zeros(len(n_pre), dtype=bool)
+                for k, side in zip(k_side, (~has_intv, has_intv)):
+                    if k is not None:
+                        drop |= side & (n_pre >= k)
+            else:
+                drop = n_pre >= k_drop
+            # 비대칭 규칙 (사용자 2026-11-07 "실패로 연결되는 것과 회복하는 것을 구분"): 개입 칸이 없는 청크의
+            # PI 는 개입으로 이어지는 부분을 못 담으니 1칸만 있어도 빼고, 개입 칸이 있는 청크는 k 칸 이상일 때만 뺀다
+            # (동률은 PI 아님). loss=bc 전용 — 가중 파일의 drop 과 맞출 방법이 아직 없다.
+            if asym:
+                if self.loss_fn is not None:
+                    raise ValueError("sirius_drop_preintv_asym 은 loss=bc 전용")
+                drop |= (n_pre > 0) & ~has_intv
             # 가중 파일이 w=0 으로 둔 샘플과 여기서 빼는 샘플이 같아야 남은 샘플의 w 가 파일대로다
             if (isinstance(self.loss_fn, SampleWeightLoss)
-                    and not np.array_equal(self.loss_fn.drop, n_pre >= k_drop)):
+                    and not np.array_equal(self.loss_fn.drop, drop)):
                 raise ValueError("가중 파일의 drop 과 PI 제외 샘플이 다르다 — drop_preintv_min · n_demo_episodes 확인")
             before = len(sampler.indices)
-            sampler.indices = [i for i in sampler.indices if n_pre[i] < k_drop]
-            logger.info(f"preintv {k_drop}칸 이상 샘플 제외: {before} -> {len(sampler.indices)}")
+            sampler.indices = [i for i in sampler.indices if not drop[i]]
+            if by_side:
+                logger.info(f"preintv(L={preintv_len}) 쪽별 문턱 — 개입 없는 청크 {k_side[0]}칸 이상 "
+                            f"{int((drop & ~has_intv).sum())}개 · 개입 있는 청크 {k_side[1]}칸 이상 "
+                            f"{int((drop & has_intv).sum())}개 샘플 제외: {before} -> {len(sampler.indices)}")
+            else:
+                logger.info(f"preintv {k_drop}칸 이상{' + 개입 없는 PI 청크' if asym else ''} 샘플 제외: "
+                            f"{before} -> {len(sampler.indices)}")
 
         # 고정 probe — 새 데이터를 배우는 동안 기존 적합을 얼마나 잃는지 곡선으로 본다 (freq 0 이면 끔).
         self.probe = None

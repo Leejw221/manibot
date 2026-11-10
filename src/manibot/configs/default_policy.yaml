@@ -153,6 +153,12 @@ finetune:
   sirius_drop_preintv_min: null # loss=sirius·sample_weight. k 를 주면 행동 창 16칸 중 preintv 가 k 칸 이상인 샘플을
                                 # 배치에 아예 넣지 않는다 (과반 = 9). 가중(P)은 전체 데이터 기준 그대로
                                 # sample_weight 는 16칸이 아니라 판정 칸(t..t+14 중 에피소드 안)에서 센다
+  sirius_drop_preintv_asym: false # loss=bc. true 면 비대칭 규칙: 개입 칸이 없는 청크는 preintv 1칸만 있어도 빼고,
+                                # 개입 칸이 있는 청크는 sirius_drop_preintv_min(k) 칸 이상일 때만 뺀다 (2026-11-07 사용자)
+  sirius_drop_preintv_min_nointv: null # loss=bc. 쪽별 문턱 — 개입 칸이 없는 청크(R→PI·전부 PI)는 preintv 가 이 칸 수 이상이면 뺀다
+  sirius_drop_preintv_min_intv: null   # loss=bc. 개입 칸이 있는 청크(PI→I)는 preintv 가 이 칸 수 이상이면 뺀다.
+                                # null 인 쪽은 빼지 않는다. sirius_drop_preintv_min·asym 과 함께 쓰지 않는다 (2026-11-10 사용자)
+  sirius_preintv_len: 15        # loss=bc 의 PI 제외 전용. 개입 직전 몇 프레임을 preintv 로 볼지 (15 = SIRIUS, 40 = 2초 @20Hz)
   sirius_chunk_label: first     # loss=sirius. first = 첫 칸 라벨로 센다(8차까지) · majority = 16칸 과반
                                 # (동률이면 preintv 아닌 쪽), 청크 하나에 가중 하나. majority 는 +policy.drop_n_last_frames=0
   sirius_p_star_auto: null      # loss=sirius. 주면 robot+preintv 를 한 클래스로 합쳐 목표 몫을 이 값으로 (④ 재학습)

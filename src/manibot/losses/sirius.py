@@ -47,9 +47,11 @@ __all__ = ["SiriusLoss", "LABELS", "frame_labels", "action_windows"]
 LABELS = {"demo": -1, "robot": 0, "intv": 1, "preintv": -10}
 
 
-def frame_labels(dataset_root, n_demo, use_preintv=True):
+def frame_labels(dataset_root, n_demo, use_preintv=True, preintv_len=15):
     """(프레임 라벨 (F,), 에피소드 번호 (F,)). 앞 n_demo 에피소드는 demo, 나머지는 action_mode
-    (0 robot · 1 intv) 에 개입 시작 직전 15 프레임을 preintv 로 덧씌운다."""
+    (0 robot · 1 intv) 에 개입 시작 직전 preintv_len 프레임을 preintv 로 덧씌운다.
+    15 = SIRIUS 원문 코드. 40 = SIRIUS 가 15 의 근거로 든 사람 반응 시간 2초를 우리 20 Hz 로 옮긴 값
+    (청크 PI 분석에서 길이 비교, 사용자 2026-11-10)."""
     import zarr
 
     from manibot.utils.intervention_labels import LABEL_PREINTV, relabel_preintv
@@ -68,7 +70,7 @@ def frame_labels(dataset_root, n_demo, use_preintv=True):
         if not use_preintv:
             fl[s] = mode[s]
         else:
-            m = relabel_preintv(mode[s], k=15)   # fixed_preintv_length
+            m = relabel_preintv(mode[s], k=preintv_len)   # fixed_preintv_length
             fl[s] = np.where(m == LABEL_PREINTV, LABELS["preintv"], m)
     return fl, ep
 
